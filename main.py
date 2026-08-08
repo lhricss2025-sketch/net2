@@ -130,21 +130,34 @@ flask_app = Flask(__name__)
 @flask_app.route("/")
 @flask_app.route("/health")
 def health_check():
-    # FIX: Safe database check
-    try:
-        db_status = db.meta_backend()
-    except Exception:
-        db_status = "Initializing..."
-    
-    return jsonify({
+    """Health check endpoint - safe for Railway deployment"""
+    # Start with basic status
+    status_data = {
         "status": "online",
         "service": "Senzo Netflix Bot",
         "version": "4.0.0",
-        "database": db_status,
         "accounts_db": DATABASE_PATH,
         "developer": "@Senzo268",
         "timestamp": datetime.utcnow().isoformat()
-    }), 200
+    }
+    
+    # Safely check database status
+    db_status = "Initializing..."
+    try:
+        # Check if db exists in global scope
+        db_instance = globals().get('db')
+        if db_instance is not None:
+            try:
+                db_status = db_instance.meta_backend()
+            except Exception as e:
+                db_status = f"Error: {str(e)[:30]}"
+        else:
+            db_status = "Not Loaded Yet"
+    except Exception as e:
+        db_status = f"Exception: {str(e)[:20]}"
+    
+    status_data["database"] = db_status
+    return jsonify(status_data), 200
 def start_health_server():
     try:
         logging.getLogger('werkzeug').setLevel(logging.ERROR)
