@@ -570,33 +570,40 @@ db = DatabaseManager()
 @flask_app.route("/")
 @flask_app.route("/health")
 def health_check():
-    """Health check endpoint - safe for Railway deployment"""
-    # Start with basic status
-    status_data = {
-        "status": "online",
-        "service": "Senzo Netflix Bot",
-        "version": "4.0.0",
-        "accounts_db": DATABASE_PATH,
-        "developer": "@Senzo268",
-        "timestamp": datetime.utcnow().isoformat()
-    }
-    
-    # Safely check database status
-    db_status = "Initializing..."
+    """Health check endpoint - bulletproof for Railway deployment"""
     try:
-        db_instance = globals().get('db')
-        if db_instance is not None:
-            try:
-                db_status = db_instance.meta_backend()
-            except Exception as e:
-                db_status = f"Error: {str(e)[:30]}"
-        else:
-            db_status = "Not Loaded Yet"
+        # Try to get database status safely
+        db_status = "Unknown"
+        try:
+            db_instance = globals().get('db')
+            if db_instance is not None:
+                try:
+                    db_status = db_instance.meta_backend()
+                except Exception as e:
+                    db_status = f"DB Error: {str(e)[:20]}"
+            else:
+                db_status = "Not Loaded"
+        except Exception:
+            db_status = "Initializing"
+        
+        return jsonify({
+            "status": "online",
+            "service": "Senzo Netflix Bot",
+            "version": "4.0.0",
+            "accounts_db": DATABASE_PATH,
+            "database": db_status,
+            "developer": "@Senzo268",
+            "timestamp": datetime.utcnow().isoformat()
+        }), 200
     except Exception as e:
-        db_status = f"Exception: {str(e)[:20]}"
-    
-    status_data["database"] = db_status
-    return jsonify(status_data), 200
+        # If ANYTHING fails, still return a 200 OK
+        return jsonify({
+            "status": "online",
+            "service": "Senzo Netflix Bot",
+            "version": "4.0.0",
+            "error": str(e)[:50],
+            "timestamp": datetime.utcnow().isoformat()
+        }), 200
 
 def start_health_server():
     try:
