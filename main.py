@@ -130,29 +130,15 @@ flask_app = Flask(__name__)
 @flask_app.route("/")
 @flask_app.route("/health")
 def health_check():
-    try:
-        try:
-            database_backend = db.meta_backend()
-        except Exception:
-            database_backend = "unavailable"
-
-        return jsonify({
-            "status": "online",
-            "service": "Senzo Netflix Bot",
-            "version": "4.0.0",
-            "database": database_backend,
-            "accounts_db": DATABASE_PATH,
-            "developer": "@Senzo268",
-            "timestamp": datetime.utcnow().isoformat()
-        }), 200
-    except Exception as e:
-        logger.error(f"Health check error: {e}")
-        return jsonify({
-            "status": "online",
-            "service": "Senzo Netflix Bot",
-            "version": "4.0.0"
-        }), 200
-
+    return jsonify({
+        "status": "online",
+        "service": "Senzo Netflix Bot",
+        "version": "4.0.0",
+        "database": db.meta_backend(),
+        "accounts_db": DATABASE_PATH,
+        "developer": "@Senzo268",
+        "timestamp": datetime.utcnow().isoformat()
+    }), 200
 
 def start_health_server():
     try:
@@ -903,8 +889,7 @@ class DatabaseManager:
         if HAS_LIBSQL and TURSO_DATABASE_URL and TURSO_DATABASE_URL.startswith("libsql://"):
             try:
                 if TURSO_AUTH_TOKEN:
-                    turso_url = f"{TURSO_DATABASE_URL}?authToken={TURSO_AUTH_TOKEN}"
-                    self.turso_conn = libsql.connect(turso_url)
+                    self.turso_conn = libsql.connect(TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
                 else:
                     self.turso_conn = libsql.connect(TURSO_DATABASE_URL)
                 self.use_turso = True
