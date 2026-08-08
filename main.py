@@ -60,14 +60,18 @@ ssl._create_default_https_context = ssl._create_unverified_context
 # ============================================================
 HAS_LIBSQL = False
 try:
-    import libsql_experimental as libsql
+    import libsql_client as libsql
     HAS_LIBSQL = True
 except ImportError:
     try:
-        import libsql
+        import libsql_experimental as libsql
         HAS_LIBSQL = True
     except ImportError:
-        pass
+        try:
+            import libsql
+            HAS_LIBSQL = True
+        except ImportError:
+            pass
 
 # ============================================================
 # TELEGRAM IMPORTS
@@ -199,35 +203,33 @@ class DatabaseManager:
         self._connect_sqlite()
     
     @retry_on_failure(max_retries=3, delay=2.0)
-    def _connect_turso(self):
-        """Connect to Turso with fallback for different library versions."""
-        if HAS_LIBSQL and TURSO_DATABASE_URL and TURSO_DATABASE_URL.startswith("libsql://"):
+def _connect_turso(self):
+    """Connect to Turso with fallback for different library versions."""
+    if HAS_LIBSQL and TURSO_DATABASE_URL and TURSO_DATABASE_URL.startswith("libsql://"):
+        try:
+            # Try using libsql_client style (recommended)
             try:
-                # Try with auth_token
-                try:
-                    if TURSO_AUTH_TOKEN:
-                        self.turso_conn = libsql.connect(TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
-                    else:
-                        self.turso_conn = libsql.connect(TURSO_DATABASE_URL)
-                    self.use_turso = True
-                    logger.info("✅ Turso connected (Persistent)")
-                    self._init_turso_tables()
-                    return
-                except TypeError as e:
-                    if "auth_token" in str(e) or "unexpected keyword" in str(e):
-                        logger.warning("⚠️ auth_token not supported in this libsql version, trying without...")
-                    else:
-                        raise e
-                
-                # Try without auth_token
-                self.turso_conn = libsql.connect(TURSO_DATABASE_URL)
+                # libsql-client uses different connection pattern
+                self.turso_conn = libsql.connect(
+                    TURSO_DATABASE_URL,
+                    auth_token=TURSO_AUTH_TOKEN if TURSO_AUTH_TOKEN else None
+                )
                 self.use_turso = True
-                logger.info("✅ Turso connected (Persistent) - no auth token")
+                logger.info("✅ Turso connected (Persistent)")
                 self._init_turso_tables()
-                
-            except Exception as e:
-                logger.error(f"⚠️ Turso connection failed: {e}")
-                self.use_turso = False
+                return
+            except TypeError:
+                pass
+            
+            # Try without auth_token (for older versions)
+            self.turso_conn = libsql.connect(TURSO_DATABASE_URL)
+            self.use_turso = True
+            logger.info("✅ Turso connected (Persistent) - no auth token")
+            self._init_turso_tables()
+            
+        except Exception as e:
+            logger.error(f"⚠️ Turso connection failed: {e}")
+            self.use_turso = False
     
     @retry_on_failure(max_retries=3, delay=1.0)
     def _connect_sqlite(self):
