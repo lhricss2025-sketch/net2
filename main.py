@@ -123,14 +123,398 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================
+# DATABASE MANAGER - MOVED TO TOP
+# ============================================================
+class DatabaseManager:
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialize()
+        return cls._instance
+    
+    def _initialize(self):
+        self.turso_conn = None
+        self.sqlite_conn = None
+        self.use_turso = False
+        self._turso_lock = threading.Lock()
+        self._sqlite_lock = threading.Lock()
+        
+        self._connect_turso()
+        self._connect_sqlite()
+    
+    @retry_on_failure(max_retries=3, delay=2.0)
+    def _connect_turso(self):
+        if HAS_LIBSQL and TURSO_DATABASE_URL and TURSO_DATABASE_URL.startswith("libsql://"):
+            try:
+                if TURSO_AUTH_TOKEN:
+                    self.turso_conn = libsql.connect(TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
+                else:
+                    self.turso_conn = libsql.connect(TURSO_DATABASE_URL)
+                self.use_turso = True
+                logger.info("✅ Turso connected (Persistent)")
+                self._init_turso_tables()
+            except Exception as e:
+                logger.error(f"⚠️ Turso connection failed: {e}")
+                self.use_turso = False
+    
+    @retry_on_failure(max_retries=3, delay=1.0)
+    def _connect_sqlite(self):
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            self.sqlite_conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False, timeout=30)
+            self.sqlite_conn.execute('PRAGMA journal_mode=WAL')
+            self.sqlite_conn.execute('PRAGMA synchronous=NORMAL')
+            self.sqlite_conn.execute('PRAGMA cache_size=10000')
+            self.sqlite_conn.execute('PRAGMA temp_store=MEMORY')
+            logger.info("✅ SQLite connected (Accounts)")
+            self._init_sqlite_tables()
+        except Exception as e:
+            logger.error(f"❌ SQLite error: {e}")
+            raise
+    
+    def _init_turso_tables(self):
+        if not self.turso_conn:
+            return
+        with self._turso_lock:
+            cur = self.turso_conn.cursor()
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    is_banned BOOLEAN DEFAULT 0,
+                    is_admin BOOLEAN DEFAULT 0,
+                    last_account_time TIMESTAMP,
+                    total_working INT DEFAULT 0,
+                    total_notworking INT DEFAULT 0,
+                    working_reports INT DEFAULT 0,
+                    notworking_reports INT DEFAULT 0,
+                    accounts_used INT DEFAULT 0,
+                    pending_report BOOLEAN DEFAULT 0,
+                    pending_report_account_id INTEGER,
+                    pending_report_type TEXT,
+                    warnings INT DEFAULT 0
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS reports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    account_id INTEGER,
+                    report_type TEXT,
+                    screenshot_file_id TEXT,
+                    status TEXT DEFAULT 'pending',
+                    reported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    reviewed_at TIMESTAMP,
+                    admin_note TEXT,
+                    admin_id INTEGER,
+                    channel_post_id INTEGER
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    message TEXT,
+                    admin_reply TEXT,
+                    status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    replied_at TIMESTAMP
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS channels (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    channel_id TEXT UNIQUE,
+                    channel_name TEXT,
+                    invite_link TEXT,
+                    is_active BOOLEAN DEFAULT 1
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS stock_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    admin_id INTEGER,
+                    file_name TEXT,
+                    total_found INT,
+                    valid_found INT,
+                    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS stats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date DATE UNIQUE,
+                    total_hits INT DEFAULT 0,
+                    total_free INT DEFAULT 0,
+                    total_bad INT DEFAULT 0
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS ban_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    admin_id INTEGER,
+                    reason TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS warning_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    admin_id INTEGER,
+                    reason TEXT,
+                    warning_number INT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            self.turso_conn.commit()
+            logger.info("✅ Turso tables initialized")
+    
+    def _init_sqlite_tables(self):
+        if not self.sqlite_conn:
+            return
+        with self._sqlite_lock:
+            cur = self.sqlite_conn.cursor()
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS accounts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email TEXT,
+                    country TEXT,
+                    plan TEXT,
+                    plan_key TEXT,
+                    cookies TEXT,
+                    nftoken TEXT,
+                    nftoken_expiry TEXT,
+                    assigned_to INTEGER,
+                    assigned_at TIMESTAMP,
+                    is_working BOOLEAN DEFAULT 1,
+                    status TEXT DEFAULT 'available',
+                    source_file TEXT,
+                    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_checked TIMESTAMP,
+                    report_count INT DEFAULT 0,
+                    account_name TEXT,
+                    streams INT,
+                    quality TEXT,
+                    price TEXT,
+                    billing_date TEXT,
+                    member_since TEXT,
+                    payment_method TEXT,
+                    card_last4 TEXT,
+                    phone TEXT,
+                    extra_member BOOLEAN DEFAULT 0,
+                    membership_status TEXT,
+                    email_verified BOOLEAN DEFAULT 0,
+                    profiles TEXT,
+                    user_guid TEXT,
+                    working_confirmed BOOLEAN DEFAULT 0,
+                    on_hold BOOLEAN DEFAULT 0
+                )
+            ''')
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status, is_working)')
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_accounts_assigned ON accounts(assigned_to)')
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email)')
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_accounts_plan ON accounts(plan_key)')
+            self.sqlite_conn.commit()
+            logger.info("✅ SQLite accounts table initialized")
+            if not self.use_turso:
+                self._init_sqlite_meta_tables()
+    
+    def _init_sqlite_meta_tables(self):
+        """User/report/channel tables in SQLite when Turso is not configured."""
+        if not self.sqlite_conn:
+            return
+        with self._sqlite_lock:
+            cur = self.sqlite_conn.cursor()
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    is_banned BOOLEAN DEFAULT 0,
+                    is_admin BOOLEAN DEFAULT 0,
+                    last_account_time TIMESTAMP,
+                    total_working INT DEFAULT 0,
+                    total_notworking INT DEFAULT 0,
+                    working_reports INT DEFAULT 0,
+                    notworking_reports INT DEFAULT 0,
+                    accounts_used INT DEFAULT 0,
+                    pending_report BOOLEAN DEFAULT 0,
+                    pending_report_account_id INTEGER,
+                    pending_report_type TEXT,
+                    warnings INT DEFAULT 0
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS reports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    account_id INTEGER,
+                    report_type TEXT,
+                    screenshot_file_id TEXT,
+                    status TEXT DEFAULT 'pending',
+                    reported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    reviewed_at TIMESTAMP,
+                    admin_note TEXT,
+                    admin_id INTEGER,
+                    channel_post_id INTEGER
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    message TEXT,
+                    admin_reply TEXT,
+                    status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    replied_at TIMESTAMP
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS channels (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    channel_id TEXT UNIQUE,
+                    channel_name TEXT,
+                    invite_link TEXT,
+                    is_active BOOLEAN DEFAULT 1
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS stock_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    admin_id INTEGER,
+                    file_name TEXT,
+                    total_found INT,
+                    valid_found INT,
+                    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS stats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date DATE UNIQUE,
+                    total_hits INT DEFAULT 0,
+                    total_free INT DEFAULT 0,
+                    total_bad INT DEFAULT 0
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS ban_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    admin_id INTEGER,
+                    reason TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS warning_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    admin_id INTEGER,
+                    reason TEXT,
+                    warning_number INT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            self.sqlite_conn.commit()
+            logger.info("✅ SQLite meta tables initialized (local mode — set Turso env for cloud DB)")
+    
+    @contextmanager
+    def turso_cursor(self):
+        if not self.turso_conn:
+            raise RuntimeError("Turso connection not available")
+        with self._turso_lock:
+            cur = self.turso_conn.cursor()
+            try:
+                yield cur
+            finally:
+                pass
+    
+    @contextmanager
+    def sqlite_cursor(self):
+        if not self.sqlite_conn:
+            raise RuntimeError("SQLite connection not available")
+        with self._sqlite_lock:
+            cur = self.sqlite_conn.cursor()
+            try:
+                yield cur
+            finally:
+                pass
+    
+    @retry_on_failure(max_retries=3, delay=1.0)
+    def execute_turso(self, query: str, params: Optional[tuple] = None) -> Any:
+        with self.turso_cursor() as cur:
+            if params:
+                cur.execute(query, params)
+            else:
+                cur.execute(query)
+            return cur
+    
+    @retry_on_failure(max_retries=3, delay=1.0)
+    def execute_sqlite(self, query: str, params: Optional[tuple] = None) -> Any:
+        with self.sqlite_cursor() as cur:
+            if params:
+                cur.execute(query, params)
+            else:
+                cur.execute(query)
+            return cur
+    
+    def commit_turso(self):
+        if self.turso_conn:
+            with self._turso_lock:
+                self.turso_conn.commit()
+    
+    def commit_sqlite(self):
+        if self.sqlite_conn:
+            with self._sqlite_lock:
+                self.sqlite_conn.commit()
+
+    def execute_meta(self, query: str, params: Optional[tuple] = None) -> Any:
+        if self.use_turso:
+            return self.execute_turso(query, params)
+        return self.execute_sqlite(query, params)
+
+    def commit_meta(self):
+        if self.use_turso:
+            self.commit_turso()
+        else:
+            self.commit_sqlite()
+
+    def meta_backend(self) -> str:
+        return "Turso" if self.use_turso else "SQLite"
+
+# ============================================================
 # FLASK APP
 # ============================================================
-from flask import Flask, jsonify
-
 flask_app = Flask(__name__)
 
 # Initialize database BEFORE Flask routes
-db = DatabaseManager()  # <--- MOVED HERE
+db = DatabaseManager()
 
 @flask_app.route("/")
 @flask_app.route("/health")
@@ -881,392 +1265,6 @@ class DuplicateTracker:
     def reset(self):
         with self.lock:
             self.processed.clear()
-
-# ============================================================
-# DATABASE MANAGER
-# ============================================================
-class DatabaseManager:
-    _instance = None
-    _lock = threading.Lock()
-    
-    def __new__(cls):
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance._initialize()
-        return cls._instance
-    
-    def _initialize(self):
-        self.turso_conn = None
-        self.sqlite_conn = None
-        self.use_turso = False
-        self._turso_lock = threading.Lock()
-        self._sqlite_lock = threading.Lock()
-        
-        self._connect_turso()
-        self._connect_sqlite()
-    
-    @retry_on_failure(max_retries=3, delay=2.0)
-    def _connect_turso(self):
-        if HAS_LIBSQL and TURSO_DATABASE_URL and TURSO_DATABASE_URL.startswith("libsql://"):
-            try:
-                if TURSO_AUTH_TOKEN:
-                    self.turso_conn = libsql.connect(TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
-                else:
-                    self.turso_conn = libsql.connect(TURSO_DATABASE_URL)
-                self.use_turso = True
-                logger.info("✅ Turso connected (Persistent)")
-                self._init_turso_tables()
-            except Exception as e:
-                logger.error(f"⚠️ Turso connection failed: {e}")
-                self.use_turso = False
-    
-    @retry_on_failure(max_retries=3, delay=1.0)
-    def _connect_sqlite(self):
-        try:
-            os.makedirs(DATA_DIR, exist_ok=True)
-            self.sqlite_conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False, timeout=30)
-            self.sqlite_conn.execute('PRAGMA journal_mode=WAL')
-            self.sqlite_conn.execute('PRAGMA synchronous=NORMAL')
-            self.sqlite_conn.execute('PRAGMA cache_size=10000')
-            self.sqlite_conn.execute('PRAGMA temp_store=MEMORY')
-            logger.info("✅ SQLite connected (Accounts)")
-            self._init_sqlite_tables()
-        except Exception as e:
-            logger.error(f"❌ SQLite error: {e}")
-            raise
-    
-    def _init_turso_tables(self):
-        if not self.turso_conn:
-            return
-        with self._turso_lock:
-            cur = self.turso_conn.cursor()
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT,
-                    first_name TEXT,
-                    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    is_banned BOOLEAN DEFAULT 0,
-                    is_admin BOOLEAN DEFAULT 0,
-                    last_account_time TIMESTAMP,
-                    total_working INT DEFAULT 0,
-                    total_notworking INT DEFAULT 0,
-                    working_reports INT DEFAULT 0,
-                    notworking_reports INT DEFAULT 0,
-                    accounts_used INT DEFAULT 0,
-                    pending_report BOOLEAN DEFAULT 0,
-                    pending_report_account_id INTEGER,
-                    pending_report_type TEXT,
-                    warnings INT DEFAULT 0
-                )
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS reports (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    account_id INTEGER,
-                    report_type TEXT,
-                    screenshot_file_id TEXT,
-                    status TEXT DEFAULT 'pending',
-                    reported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    reviewed_at TIMESTAMP,
-                    admin_note TEXT,
-                    admin_id INTEGER,
-                    channel_post_id INTEGER
-                )
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    message TEXT,
-                    admin_reply TEXT,
-                    status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    replied_at TIMESTAMP
-                )
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS channels (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    channel_id TEXT UNIQUE,
-                    channel_name TEXT,
-                    invite_link TEXT,
-                    is_active BOOLEAN DEFAULT 1
-                )
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS stock_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    admin_id INTEGER,
-                    file_name TEXT,
-                    total_found INT,
-                    valid_found INT,
-                    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS settings (
-                    key TEXT PRIMARY KEY,
-                    value TEXT,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS stats (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date DATE UNIQUE,
-                    total_hits INT DEFAULT 0,
-                    total_free INT DEFAULT 0,
-                    total_bad INT DEFAULT 0
-                )
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS ban_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    admin_id INTEGER,
-                    reason TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS warning_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    admin_id INTEGER,
-                    reason TEXT,
-                    warning_number INT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            self.turso_conn.commit()
-            logger.info("✅ Turso tables initialized")
-    
-    def _init_sqlite_tables(self):
-        if not self.sqlite_conn:
-            return
-        with self._sqlite_lock:
-            cur = self.sqlite_conn.cursor()
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS accounts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email TEXT,
-                    country TEXT,
-                    plan TEXT,
-                    plan_key TEXT,
-                    cookies TEXT,
-                    nftoken TEXT,
-                    nftoken_expiry TEXT,
-                    assigned_to INTEGER,
-                    assigned_at TIMESTAMP,
-                    is_working BOOLEAN DEFAULT 1,
-                    status TEXT DEFAULT 'available',
-                    source_file TEXT,
-                    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_checked TIMESTAMP,
-                    report_count INT DEFAULT 0,
-                    account_name TEXT,
-                    streams INT,
-                    quality TEXT,
-                    price TEXT,
-                    billing_date TEXT,
-                    member_since TEXT,
-                    payment_method TEXT,
-                    card_last4 TEXT,
-                    phone TEXT,
-                    extra_member BOOLEAN DEFAULT 0,
-                    membership_status TEXT,
-                    email_verified BOOLEAN DEFAULT 0,
-                    profiles TEXT,
-                    user_guid TEXT,
-                    working_confirmed BOOLEAN DEFAULT 0,
-                    on_hold BOOLEAN DEFAULT 0
-                )
-            ''')
-            cur.execute('CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status, is_working)')
-            cur.execute('CREATE INDEX IF NOT EXISTS idx_accounts_assigned ON accounts(assigned_to)')
-            cur.execute('CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email)')
-            cur.execute('CREATE INDEX IF NOT EXISTS idx_accounts_plan ON accounts(plan_key)')
-            self.sqlite_conn.commit()
-            logger.info("✅ SQLite accounts table initialized")
-            if not self.use_turso:
-                self._init_sqlite_meta_tables()
-    
-    def _init_sqlite_meta_tables(self):
-        """User/report/channel tables in SQLite when Turso is not configured."""
-        if not self.sqlite_conn:
-            return
-        with self._sqlite_lock:
-            cur = self.sqlite_conn.cursor()
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT,
-                    first_name TEXT,
-                    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    is_banned BOOLEAN DEFAULT 0,
-                    is_admin BOOLEAN DEFAULT 0,
-                    last_account_time TIMESTAMP,
-                    total_working INT DEFAULT 0,
-                    total_notworking INT DEFAULT 0,
-                    working_reports INT DEFAULT 0,
-                    notworking_reports INT DEFAULT 0,
-                    accounts_used INT DEFAULT 0,
-                    pending_report BOOLEAN DEFAULT 0,
-                    pending_report_account_id INTEGER,
-                    pending_report_type TEXT,
-                    warnings INT DEFAULT 0
-                )
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS reports (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    account_id INTEGER,
-                    report_type TEXT,
-                    screenshot_file_id TEXT,
-                    status TEXT DEFAULT 'pending',
-                    reported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    reviewed_at TIMESTAMP,
-                    admin_note TEXT,
-                    admin_id INTEGER,
-                    channel_post_id INTEGER
-                )
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    message TEXT,
-                    admin_reply TEXT,
-                    status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    replied_at TIMESTAMP
-                )
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS channels (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    channel_id TEXT UNIQUE,
-                    channel_name TEXT,
-                    invite_link TEXT,
-                    is_active BOOLEAN DEFAULT 1
-                )
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS stock_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    admin_id INTEGER,
-                    file_name TEXT,
-                    total_found INT,
-                    valid_found INT,
-                    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS settings (
-                    key TEXT PRIMARY KEY,
-                    value TEXT,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS stats (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date DATE UNIQUE,
-                    total_hits INT DEFAULT 0,
-                    total_free INT DEFAULT 0,
-                    total_bad INT DEFAULT 0
-                )
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS ban_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    admin_id INTEGER,
-                    reason TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS warning_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    admin_id INTEGER,
-                    reason TEXT,
-                    warning_number INT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            self.sqlite_conn.commit()
-            logger.info("✅ SQLite meta tables initialized (local mode — set Turso env for cloud DB)")
-    
-    @contextmanager
-    def turso_cursor(self):
-        if not self.turso_conn:
-            raise RuntimeError("Turso connection not available")
-        with self._turso_lock:
-            cur = self.turso_conn.cursor()
-            try:
-                yield cur
-            finally:
-                pass
-    
-    @contextmanager
-    def sqlite_cursor(self):
-        if not self.sqlite_conn:
-            raise RuntimeError("SQLite connection not available")
-        with self._sqlite_lock:
-            cur = self.sqlite_conn.cursor()
-            try:
-                yield cur
-            finally:
-                pass
-    
-    @retry_on_failure(max_retries=3, delay=1.0)
-    def execute_turso(self, query: str, params: Optional[tuple] = None) -> Any:
-        with self.turso_cursor() as cur:
-            if params:
-                cur.execute(query, params)
-            else:
-                cur.execute(query)
-            return cur
-    
-    @retry_on_failure(max_retries=3, delay=1.0)
-    def execute_sqlite(self, query: str, params: Optional[tuple] = None) -> Any:
-        with self.sqlite_cursor() as cur:
-            if params:
-                cur.execute(query, params)
-            else:
-                cur.execute(query)
-            return cur
-    
-    def commit_turso(self):
-        if self.turso_conn:
-            with self._turso_lock:
-                self.turso_conn.commit()
-    
-    def commit_sqlite(self):
-        if self.sqlite_conn:
-            with self._sqlite_lock:
-                self.sqlite_conn.commit()
-
-    def execute_meta(self, query: str, params: Optional[tuple] = None) -> Any:
-        if self.use_turso:
-            return self.execute_turso(query, params)
-        return self.execute_sqlite(query, params)
-
-    def commit_meta(self):
-        if self.use_turso:
-            self.commit_turso()
-        else:
-            self.commit_sqlite()
-
-    def meta_backend(self) -> str:
-        return "Turso" if self.use_turso else "SQLite"
 
 # ============================================================
 # REPOSITORY LAYER
