@@ -125,7 +125,12 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # FLASK APP
 # ============================================================
+from flask import Flask, jsonify
+
 flask_app = Flask(__name__)
+
+# Initialize database BEFORE Flask routes
+db = DatabaseManager()  # <--- MOVED HERE
 
 @flask_app.route("/")
 @flask_app.route("/health")
@@ -144,7 +149,6 @@ def health_check():
     # Safely check database status
     db_status = "Initializing..."
     try:
-        # Check if db exists in global scope
         db_instance = globals().get('db')
         if db_instance is not None:
             try:
@@ -158,6 +162,7 @@ def health_check():
     
     status_data["database"] = db_status
     return jsonify(status_data), 200
+
 def start_health_server():
     try:
         logging.getLogger('werkzeug').setLevel(logging.ERROR)
@@ -1262,8 +1267,6 @@ class DatabaseManager:
 
     def meta_backend(self) -> str:
         return "Turso" if self.use_turso else "SQLite"
-
-db = DatabaseManager()
 
 # ============================================================
 # REPOSITORY LAYER
