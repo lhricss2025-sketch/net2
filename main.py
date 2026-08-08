@@ -130,16 +130,21 @@ flask_app = Flask(__name__)
 @flask_app.route("/")
 @flask_app.route("/health")
 def health_check():
+    # FIX: Safe database check
+    try:
+        db_status = db.meta_backend()
+    except Exception:
+        db_status = "Initializing..."
+    
     return jsonify({
         "status": "online",
         "service": "Senzo Netflix Bot",
         "version": "4.0.0",
-        "database": db.meta_backend(),
+        "database": db_status,
         "accounts_db": DATABASE_PATH,
         "developer": "@Senzo268",
         "timestamp": datetime.utcnow().isoformat()
     }), 200
-
 def start_health_server():
     try:
         logging.getLogger('werkzeug').setLevel(logging.ERROR)
