@@ -257,51 +257,71 @@ class DatabaseManager:
         self._connect_sqlite()
     
     def _connect_turso(self):
-        """Connect to Turso with fallback for different library versions and drivers."""
-        url = TURSO_DATABASE_URL.strip() if TURSO_DATABASE_URL else ""
+        """Connect to Turso with multi-scheme fallback (HTTPS and LibSQL/WSS)."""
+        raw_url = TURSO_DATABASE_URL.strip() if TURSO_DATABASE_URL else ""
         token = TURSO_AUTH_TOKEN.strip() if TURSO_AUTH_TOKEN else ""
         
-        if not url:
+        if not raw_url:
             logger.info("ℹ️ TURSO_DATABASE_URL not configured — using local SQLite for meta database.")
             self.use_turso = False
             return
 
-        # Standardize URL scheme if needed
-        if not (url.startswith("libsql://") or url.startswith("https://") or url.startswith("http://") or url.startswith("wss://")):
-            url = f"libsql://{url}"
+        # Extract host clean
+        clean_host = raw_url
+        for prefix in ["libsql://", "https://", "http://", "wss://", "ws://"]:
+            if clean_host.startswith(prefix):
+                clean_host = clean_host[len(prefix):]
+                break
 
-        # Attempt 1: Try libsql_client.create_client_sync
+        # Candidate URLs in priority order:
+        # 1. https://... (HTTP Hrana pipeline - most reliable across cloud platforms)
+        # 2. libsql://... (WebSocket Hrana pipeline)
+        candidate_urls = [
+            f"https://{clean_host}",
+            f"libsql://{clean_host}"
+        ]
+
+        # Attempt 1: Try libsql_client with candidate URLs
         try:
             import libsql_client
-            client = libsql_client.create_client_sync(url=url, auth_token=token if token else None)
-            client.execute("SELECT 1")
-            self.turso_conn = client
-            self.turso_driver_type = 'client_sync'
-            self.use_turso = True
-            logger.info("✅ Turso connected via libsql_client.create_client_sync")
-            self._init_turso_tables()
-            return
+            for target_url in candidate_urls:
+                try:
+                    logger.info(f"🔄 Attempting Turso connection to {target_url}...")
+                    client = libsql_client.create_client_sync(url=target_url, auth_token=token if token else None)
+                    client.execute("SELECT 1")
+                    self.turso_conn = client
+                    self.turso_driver_type = 'client_sync'
+                    self.use_turso = True
+                    logger.info(f"✅ Turso connected via libsql_client ({target_url})")
+                    self._init_turso_tables()
+                    return
+                except Exception as e_url:
+                    logger.warning(f"⚠️ Turso connection to {target_url} failed: {e_url}")
         except Exception as e1:
-            logger.warning(f"⚠️ Turso connection via libsql_client failed: {e1}")
+            logger.warning(f"⚠️ libsql_client library error: {e1}")
 
         # Attempt 2: Try libsql / libsql_experimental connect style
         try:
             import libsql
-            try:
-                conn = libsql.connect(url, auth_token=token if token else None)
-            except TypeError:
-                conn = libsql.connect(url)
-            cur = conn.cursor()
-            cur.execute("SELECT 1")
-            cur.fetchone()
-            self.turso_conn = conn
-            self.turso_driver_type = 'cursor'
-            self.use_turso = True
-            logger.info("✅ Turso connected via libsql.connect")
-            self._init_turso_tables()
-            return
+            for target_url in candidate_urls:
+                try:
+                    try:
+                        conn = libsql.connect(target_url, auth_token=token if token else None)
+                    except TypeError:
+                        conn = libsql.connect(target_url)
+                    cur = conn.cursor()
+                    cur.execute("SELECT 1")
+                    cur.fetchone()
+                    self.turso_conn = conn
+                    self.turso_driver_type = 'cursor'
+                    self.use_turso = True
+                    logger.info(f"✅ Turso connected via libsql.connect ({target_url})")
+                    self._init_turso_tables()
+                    return
+                except Exception as e_libsql:
+                    logger.warning(f"⚠️ libsql connection to {target_url} failed: {e_libsql}")
         except Exception as e2:
-            logger.warning(f"⚠️ Turso connection via libsql failed: {e2}")
+            logger.warning(f"⚠️ libsql library error: {e2}")
 
         logger.error("❌ Could not connect to Turso — falling back to local SQLite meta tables.")
         self.use_turso = False
