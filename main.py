@@ -123,7 +123,58 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# DATABASE MANAGER - MOVED TO TOP
+# UTILITY FUNCTIONS (MOVED BEFORE DATABASE MANAGER)
+# ============================================================
+def safe_str(value: Any, default: str = "Unknown") -> str:
+    if value is None:
+        return default
+    s = str(value).strip()
+    return s if s else default
+
+def safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+def safe_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.lower() in ("true", "yes", "1", "on", "t")
+    return False
+
+def html_escape(text: Any) -> str:
+    return html.escape(safe_str(text, default=""))
+
+def get_timestamp() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+def retry_on_failure(max_retries: int = 3, delay: float = 1.0):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        time.sleep(delay * (attempt + 1))
+                        continue
+                    raise last_exception
+            raise last_exception
+        return wrapper
+    return decorator
+
+# ============================================================
+# DATABASE MANAGER
 # ============================================================
 class DatabaseManager:
     _instance = None
@@ -601,57 +652,6 @@ class Account:
     extra_member: bool = False
     membership_status: str = ""
     on_hold: bool = False
-
-# ============================================================
-# UTILITY FUNCTIONS
-# ============================================================
-def safe_str(value: Any, default: str = "Unknown") -> str:
-    if value is None:
-        return default
-    s = str(value).strip()
-    return s if s else default
-
-def safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        return default
-
-def safe_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        return value.lower() in ("true", "yes", "1", "on", "t")
-    return False
-
-def html_escape(text: Any) -> str:
-    return html.escape(safe_str(text, default=""))
-
-def get_timestamp() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
-
-def retry_on_failure(max_retries: int = 3, delay: float = 1.0):
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            last_exception = None
-            for attempt in range(max_retries):
-                try:
-                    return func(*args, **kwargs)
-                except Exception as e:
-                    last_exception = e
-                    if attempt < max_retries - 1:
-                        time.sleep(delay * (attempt + 1))
-                        continue
-                    raise last_exception
-            raise last_exception
-        return wrapper
-    return decorator
 
 # ============================================================
 # ADVANCED COOKIE EXTRACTION (From Reference Code)
@@ -3147,3 +3147,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
