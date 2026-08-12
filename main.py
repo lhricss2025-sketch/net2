@@ -230,29 +230,30 @@ def decode_netflix_value(value):
     except Exception:
         pass
     
-    # Step 5: Remove ct= prefix
-    if cleaned.startswith("ct="):
-        cleaned = cleaned[3:]
-    if cleaned.startswith("ct%3D"):
-        cleaned = cleaned[5:]
+    # Check if it's a raw NetflixId token (usually starts with v= or contains ct=)
+    # If it is, we don't want to split it by & or ? because those are part of the token
+    is_token = "ct=" in cleaned or cleaned.startswith("v=")
     
-    # ============================================================
-    # CRITICAL FIX 1: REMOVE ALL QUERY PARAMETERS
-    # ============================================================
-    if "&" in cleaned:
-        cleaned = cleaned.split("&")[0]
-    if "%26" in cleaned:
-        cleaned = cleaned.split("%26")[0]
-    if "?" in cleaned:
-        cleaned = cleaned.split("?")[0]
-    
-    # ============================================================
-    # CRITICAL FIX 2: REMOVE pg= (Profile GUID)
-    # ============================================================
-    if "pg=" in cleaned:
-        cleaned = cleaned.split("pg=")[0]
-    if "%26pg=" in cleaned:
-        cleaned = cleaned.split("%26pg=")[0]
+    if not is_token:
+        # Step 5: Remove ct= prefix
+        if cleaned.startswith("ct="):
+            cleaned = cleaned[3:]
+        if cleaned.startswith("ct%3D"):
+            cleaned = cleaned[5:]
+        
+        # REMOVE QUERY PARAMETERS ONLY IF NOT A TOKEN
+        if "&" in cleaned:
+            cleaned = cleaned.split("&")[0]
+        if "%26" in cleaned:
+            cleaned = cleaned.split("%26")[0]
+        if "?" in cleaned:
+            cleaned = cleaned.split("?")[0]
+        
+        # REMOVE pg= (Profile GUID)
+        if "pg=" in cleaned:
+            cleaned = cleaned.split("pg=")[0]
+        if "%26pg=" in cleaned:
+            cleaned = cleaned.split("%26pg=")[0]
     
     # Step 6: Final URL decode
     try:
@@ -712,6 +713,8 @@ def extract_raw_cookie_entries(raw_text):
         else:
             value = value.rstrip(",")
         
+        # In netflixcookiechecker.py, raw cookies are stored without aggressive decoding
+        # We will decode but not split them if they are tokens
         cleaned_value = decode_netflix_value(value)
         if not cleaned_value:
             continue
@@ -880,6 +883,7 @@ def extract_netflix_cookie_bundles(content):
     if bundles:
         return bundles
     
+    # Fallback for very long tokens (from main.py, not in standalone checker but useful)
     long_tokens = re.findall(r'[A-Za-z0-9+/=]{40,}', content)
     for token in long_tokens:
         cleaned_token = decode_netflix_value(token)
@@ -1110,44 +1114,61 @@ def extract_info(response_text):
     else:
         extracted = {
             "accountOwnerName": extract_first_match(response_text, [
-                r'userInfo"\s*:\s*\{\s*"name"\s*:\s*"([^"]+)"',
-                r'"accountOwnerName"\s*:\s*"([^"]+)"',
-            ]),
-            "email": extract_first_match(response_text, [
-                r'"emailAddress"\s*:\s*"([^"]+)"',
-                r'"email"\s*:\s*"([^"]+)"',
-            ]),
-            "countryOfSignup": extract_first_match(response_text, [
-                r'"countryOfSignup":\s*"([^"]+)"',
-                r'"currentCountry"\s*:\s*"([^"]+)"',
-            ]),
+                    r'userInfo"\s*:\s*\{\s*"name"\s*:\s*"([^"]+)"',
+                    r'"accountOwnerName"\s*:\s*"([^"]+)"',
+                    r'"name"\s*:\s*\{\s*"fieldType"\s*:\s*"String"\s*,\s*"value"\s*:\s*"([^"]+)"',
+                    r'"firstName"\s*:\s*"([^"]+)"',
+                ]),
+	            "email": extract_first_match(response_text, [
+                    r'"emailAddress"\s*:\s*"([^"]+)"',
+                    r'"email"\s*:\s*"([^"]+)"',
+                    r'"loginId"\s*:\s*"([^"]+)"',
+                ]),
+	            "countryOfSignup": extract_first_match(response_text, [
+                    r'"currentCountry"\s*:\s*"([^"]+)"',
+                    r'"countryOfSignup":\s*"([^"]+)"',
+                ]),
             "memberSince": extract_first_match(response_text, [r'"memberSince":\s*"([^"]+)"']),
-            "nextBillingDate": extract_first_match(response_text, [
-                r'"GrowthNextBillingDate"\s*,\s*"date"\s*:\s*"([^"T]+)T',
-                r'"nextBillingDate"\s*:\s*"([^"]+)"',
-            ]),
+	            "nextBillingDate": extract_first_match(response_text, [
+                    r'"GrowthNextBillingDate"\s*,\s*"date"\s*:\s*"([^"T]+)T',
+                    r'"nextBillingDate"\s*:\s*"([^"]+)"',
+                    r'"nextBilling"\s*:\s*\{\s*"fieldType"\s*:\s*"String"\s*,\s*"value"\s*:\s*"([^"]+)"',
+                ]),
             "userGuid": extract_first_match(response_text, [r'"userGuid":\s*"([^"]+)"']),
             "membershipStatus": extract_first_match(response_text, [r'"membershipStatus":\s*"([^"]+)"']),
             "maxStreams": extract_first_match(response_text, [
                 r'maxStreams\":\{\"fieldType\":\"Numeric\",\"value\":([^,]+),',
                 r'"maxStreams"\s*:\s*"?([^",}]+)"?',
             ]),
-            "localizedPlanName": extract_first_match(response_text, [
-                r'"localizedPlanName"\s*:\s*"([^"]+)"',
-                r'"planName"\s*:\s*"([^"]+)"',
-            ]),
-            "planPrice": extract_first_match(response_text, [
-                r'"planPrice"\s*:\s*"([^"]+)"',
-                r'"formattedPrice"\s*:\s*"([^"]+)"',
-            ]),
-            "paymentMethodType": extract_first_match(response_text, [
-                r'"paymentMethod"\s*:\s*"([^"]+)"',
-                r'"paymentType"\s*:\s*"([^"]+)"',
-            ]),
-            "maskedCard": extract_first_match(response_text, [
-                r'"displayText"\s*:\s*"([^"]+)"',
-                r'"lastFour"\s*:\s*"([^"]+)"',
-            ]),
+	            "localizedPlanName": extract_first_match(response_text, [
+                    r'"MemberPlan"\s*,\s*"fields"\s*:\s*\{\s*"localizedPlanName"\s*:\s*\{\s*"fieldType"\s*:\s*"String"\s*,\s*"value"\s*:\s*"([^"]+)"',
+                    r'localizedPlanName\":\{\"fieldType\":\"String\",\"value\":\"([^"]+)"',
+                    r'"currentPlan"\s*:\s*\{[\s\S]*?"plan"\s*:\s*\{[\s\S]*?"name"\s*:\s*"([^"]+)"',
+                    r'"nextPlan"\s*:\s*\{[\s\S]*?"plan"\s*:\s*\{[\s\S]*?"name"\s*:\s*"([^"]+)"',
+                    r'"localizedPlanName"\s*:\s*"([^"]+)"',
+                    r'"planName"\s*:\s*"([^"]+)"',
+                ]),
+	            "planPrice": extract_first_match(response_text, [
+                    r'"formattedPlanPrice"\s*:\s*"([^"]+)"',
+                    r'"formattedPrice"\s*:\s*"([^"]+)"',
+                    r'"planPriceDisplay"\s*:\s*"([^"]+)"',
+                    r'"displayPrice"\s*:\s*"([^"]+)"',
+                    r'"planPrice"\s*:\s*\{[\s\S]*?"value"\s*:\s*"([^"]+)"',
+                    r'"planPrice"\s*:\s*"([^"]+)"',
+                ]),
+	            "paymentMethodType": extract_first_match(response_text, [
+                    r'"paymentMethod"\s*:\s*\{\s*"fieldType"\s*:\s*"String"\s*,\s*"value"\s*:\s*"([^"]+)"',
+                    r'"paymentMethod"\s*:\s*"([^"]+)"',
+                    r'"paymentType"\s*:\s*"([^"]+)"',
+                    r'"paymentMethodType"\s*:\s*"([^"]+)"',
+                ]),
+	            "maskedCard": extract_first_match(response_text, [
+                    r'"__typename"\s*:\s*"GrowthCardPaymentMethod"[\s\S]*?"displayText"\s*:\s*"([^"]+)"',
+                    r'"paymentCardDisplayString"\s*:\s*"([^"]+)"',
+                    r'"paymentMethodLast4"\s*:\s*"([^"]+)"',
+                    r'"lastFour"\s*:\s*"([^"]+)"',
+                    r'"maskedCard"\s*:\s*"([^"]+)"',
+                ]),
             "phoneNumber": extract_first_match(response_text, [
                 r'"phoneNumber"\s*:\s*"([^"]+)"',
                 r'"mobilePhone"\s*:\s*"([^"]+)"',
@@ -1473,6 +1494,7 @@ class NetflixService:
                     try:
                         response = session.get(
                             url,
+                            headers={"Accept-Encoding": "identity"},
                             timeout=CHECK_TIMEOUT,
                             verify=False,
                             allow_redirects=True
@@ -1483,11 +1505,27 @@ class NetflixService:
                         
                         if response.status_code == 200:
                             text = response.text
-                            account_indicators = ["account", "membership", "profile", "browse", "Your Account", "netflix"]
-                            if any(indicator in text.lower() for indicator in account_indicators):
-                                info = NetflixService.parse_account_page(text)
-                                is_subscribed = NetflixService.is_subscribed(info)
-                                
+                            info = NetflixService.parse_account_page(text)
+                            
+                            # Fallback if info is incomplete
+                            if not has_complete_account_info(info) and url != "https://www.netflix.com/YourAccount":
+                                try:
+                                    fallback_resp = session.get(
+                                        "https://www.netflix.com/YourAccount",
+                                        headers={"Accept-Encoding": "identity"},
+                                        timeout=CHECK_TIMEOUT,
+                                        verify=False
+                                    )
+                                    if fallback_resp.status_code == 200:
+                                        fallback_info = NetflixService.parse_account_page(fallback_resp.text)
+                                        info = merge_info(info, fallback_info)
+                                except:
+                                    pass
+                            
+                            is_subscribed = NetflixService.is_subscribed(info)
+                            
+                            # If we have at least country or plan, consider it valid
+                            if info.get("countryOfSignup") or info.get("localizedPlanName"):
                                 nftoken = None
                                 nftoken_expiry = None
                                 if netflix_id:
@@ -1507,7 +1545,8 @@ class NetflixService:
                                     "nftoken_expiry": nftoken_expiry,
                                 }
                         elif response.status_code == 403:
-                            return {"valid": False, "error": "HTTP 403 Forbidden - account locked or banned"}
+                            last_error = "HTTP 403 Forbidden"
+                            continue
                         elif response.status_code == 429:
                             time.sleep(2)
                             continue
@@ -3251,7 +3290,7 @@ class BotHandlers:
                     except Exception:
                         continue
 
-                    if result.get("valid") and result.get("subscribed"):
+                    if result.get("valid"):
                         info = result.get("info", {})
                         bundle_info = bundle.get("info", {})
                         if bundle_info:
@@ -3309,7 +3348,7 @@ class BotHandlers:
                     f"✅ <b>STOCK UPLOAD COMPLETE!</b>\n\n"
                     f"📁 <b>File:</b> {html_escape(file_name)}\n"
                     f"🔍 <b>Bundles Found:</b> {total}\n"
-                    f"✅ <b>Valid Subscribed:</b> {valid}\n"
+                    f"✅ <b>Valid Accounts:</b> {valid}\n"
                     f"💾 <b>Saved to DB:</b> {saved}\n"
                     f"📊 <b>Available Now:</b> {stats.get('total', 0)}\n"
                     f"📋 <b>Plan Breakdown:</b>\n{plan_breakdown if plan_breakdown else '   No plans'}\n\n"
