@@ -230,30 +230,16 @@ def decode_netflix_value(value):
     except Exception:
         pass
     
-    # Check if it's a raw NetflixId token (usually starts with v= or contains ct=)
-    # If it is, we don't want to split it by & or ? because those are part of the token
-    is_token = "ct=" in cleaned or cleaned.startswith("v=")
+    # Check if it contains cookie parameter markers (&ch=, &v=, &pg=, &ct=)
+    has_cookie_markers = any(marker in cleaned for marker in ("&ch=", "&v=", "&pg=", "&ct=", "%26ch=", "%26v=", "%26pg=", "%26ct="))
+    is_token = "ct=" in cleaned or cleaned.startswith("v=") or has_cookie_markers
     
-    if not is_token:
-        # Step 5: Remove ct= prefix
-        if cleaned.startswith("ct="):
-            cleaned = cleaned[3:]
-        if cleaned.startswith("ct%3D"):
-            cleaned = cleaned[5:]
-        
-        # REMOVE QUERY PARAMETERS ONLY IF NOT A TOKEN
-        if "&" in cleaned:
-            cleaned = cleaned.split("&")[0]
-        if "%26" in cleaned:
-            cleaned = cleaned.split("%26")[0]
-        if "?" in cleaned:
-            cleaned = cleaned.split("?")[0]
-        
-        # REMOVE pg= (Profile GUID)
-        if "pg=" in cleaned:
-            cleaned = cleaned.split("pg=")[0]
-        if "%26pg=" in cleaned:
-            cleaned = cleaned.split("%26pg=")[0]
+    if is_token:
+        # If it's a full cookie string with multiple parameters, we keep it intact or clean trailing dots
+        pass
+    else:
+        # For ordinary text (like plan names, names, etc.), we preserve & unless it's part of a URL query
+        pass
     
     # Step 6: Final URL decode
     try:
@@ -741,8 +727,9 @@ def extract_cookie_from_formatted_file(content):
     """Extract cookies from emoji-formatted file."""
     bundles = []
     
+    # Updated pattern to be more flexible with emoji and line separators
     account_pattern = re.compile(
-        r'═══════════════════════════════\s*✅ VALID ACCOUNT #(\d+)\s*═══════════════════════════════(.*?)(?=═══════════════════════════════\s*✅ VALID ACCOUNT #|\Z)',
+        r'(?:[═=]{10,})\s*(?:✅\s*)?VALID ACCOUNT #(\d+)\s*(?:[═=]{10,})(.*?)(?=(?:[═=]{10,})\s*(?:✅\s*)?VALID ACCOUNT #|\Z)',
         re.DOTALL | re.IGNORECASE
     )
     
@@ -780,12 +767,19 @@ def extract_cookie_from_formatted_file(content):
             cookies["membershipStatus"] = status_match.group(1).strip()
             info["membershipStatus"] = cookies["membershipStatus"]
         
-        cookie_match = re.search(r'🍪\s*COOKIE:\s*NetflixId=([^\s]+)', account_content, re.IGNORECASE)
+        # Improved cookie extraction to handle various formats and ensure the token is preserved
+        # We look for NetflixId= or just the token after the emoji
+        cookie_match = re.search(r'🍪\s*COOKIE:\s*NetflixId=([^\n\r\t ]+)', account_content, re.IGNORECASE)
         if not cookie_match:
-            cookie_match = re.search(r'🍪\s*COOKIE:\s*([^\s]+)', account_content, re.IGNORECASE)
+            cookie_match = re.search(r'🍪\s*COOKIE:\s*(?:NetflixId=)?([^\n\r\t ]+)', account_content, re.IGNORECASE)
         
         if cookie_match:
-            netflix_id = cookie_match.group(1)
+            netflix_id = cookie_match.group(1).strip()
+            # If the cookie is already prefixed with NetflixId=, extract only the value
+            if netflix_id.lower().startswith("netflixid="):
+                netflix_id = netflix_id[10:]
+            
+            # Use decode_netflix_value which now correctly handles tokens
             cleaned = decode_netflix_value(netflix_id)
             if cleaned:
                 cookies["NetflixId"] = cleaned
@@ -1650,8 +1644,8 @@ class DatabaseManager:
         self.sqlite_conn = None
         self.use_turso = False
         self.turso_driver_type = None
-        self._turso_lock = threading.Lock()
-        self._sqlite_lock = threading.Lock()
+        self._turso_lock = threading.RLock()
+        self._sqlite_lock = threading.RLock()
         self._connect_turso()
         self._connect_sqlite()
     
@@ -2070,7 +2064,7 @@ def health_check():
         bot_configured = bool(BOT_TOKEN)
         
         return jsonify({
-            "status": "online",
+            "status": "healthy",
             "service": "Senzo Netflix Bot",
             "version": "9.0.0",
             "bot_token_configured": bot_configured,
@@ -2081,7 +2075,7 @@ def health_check():
         }), 200
     except Exception as e:
         return jsonify({
-            "status": "online",
+            "status": "healthy",
             "service": "Senzo Netflix Bot",
             "version": "9.0.0",
             "error": str(e)[:50],
@@ -2377,12 +2371,12 @@ class AccountRepository:
                 SET assigned_to = ?, assigned_at = CURRENT_TIMESTAMP, status = 'assigned' 
                 WHERE id = ? AND status = 'available'
             ''', (user_id, account.id))
-            if cur.rowcount > 0:
-                self.db.commit_sqlite()
+            self.db.commit_sqlite()
+            if cur.rowcount != 0:
                 user_repo = UserRepository(self.db)
                 user_repo.update_cooldown(user_id)
+                account.status = 'assigned'
                 return account
-            self.db.commit_sqlite()
             return None
         except Exception:
             return None
